@@ -3224,7 +3224,6 @@ dependencies = [
  "egui-wgpu",
  "egui_extras",
  "env_logger",
- "type-map",
 ]
 
 [[package]]

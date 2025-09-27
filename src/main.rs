@@ -1,13 +1,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-#![allow(rustdoc::missing_crate_level_docs)] // it's an example
+
+mod ui;
+mod sound;
 
 use eframe::{egui, egui_wgpu, wgpu};
 use eframe::egui::PaintCallbackInfo;
-use eframe::egui_wgpu::RenderState;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 
 fn main() -> eframe::Result {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+    env_logger::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([320.0, 240.0]),
         ..Default::default()
@@ -67,11 +68,11 @@ impl CallbackTrait for CustomCallback {
         &self,
         _info: PaintCallbackInfo,
         pass: &mut wgpu::RenderPass<'static>,
-        _resources: &CallbackResources,
+        resources: &CallbackResources,
     ) {
         // Assume we already created pipeline elsewhere (e.g. in resources)
         // Here we'll just set a pipeline and draw
-        if let Some(pipeline) = _resources.get::<wgpu::RenderPipeline>() {
+        if let Some(pipeline) = resources.get::<wgpu::RenderPipeline>() {
             pass.set_pipeline(pipeline);
             pass.draw(0..3, 0..1);
         }
