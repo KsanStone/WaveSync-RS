@@ -14,7 +14,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "My egui App",
+        "Wavesync",
         options,
         Box::new(|cc| {
             // This gives us image support:
