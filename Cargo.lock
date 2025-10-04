@@ -3220,6 +3220,7 @@ dependencies = [
 name = "wavesync-rs"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "eframe",
  "egui-wgpu",
  "egui_extras",
