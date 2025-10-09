@@ -3415,6 +3415,7 @@ dependencies = [
  "egui-wgpu",
  "egui_extras",
  "env_logger",
+ "log",
  "rustfft",
 ]
 

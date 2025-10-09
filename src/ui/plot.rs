@@ -72,7 +72,7 @@ impl <'a> GpuPlot<'a> {
     }
 
     pub fn show(self, ui: &mut Ui, paint_callback: impl CallbackTrait + 'static) -> Response {
-        let (rect, response) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
 
         const AXIS_WIDTH: i8 = 30;
 

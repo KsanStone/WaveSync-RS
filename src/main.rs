@@ -6,6 +6,7 @@ mod sound;
 use crate::ui::plot::{GpuPlot, PlotData};
 use crate::ui::visualizer::waveform::{WaveformVisualizer, WaveformVisualizerCallback};
 use eframe::egui;
+use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
 
 fn main() -> eframe::Result {
     env_logger::init();
@@ -27,7 +28,8 @@ fn main() -> eframe::Result {
 struct MyApp {
     segments: u32,
     audio_service: sound::audio_service::AudioService,
-    waveform_visualizer: WaveformVisualizer
+    waveform_visualizer: WaveformVisualizer,
+    spectrum_visualizer: SpectrumVisualizer,
 }
 
 impl Default for MyApp {
@@ -37,6 +39,7 @@ impl Default for MyApp {
         Self {
             segments: 42,
             waveform_visualizer: WaveformVisualizer::new(audio_service.clone()),
+            spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone()),
             audio_service,
         }
     }
@@ -45,7 +48,8 @@ impl Default for MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
-        let mut plot_data = PlotData::default();
+        let mut waveform_plot_data = PlotData::default();
+        let mut spectrum_plot_data = PlotData::default();
         egui::TopBottomPanel::bottom("bottom_bar")
             .resizable(false)
             .show(ctx, |ui| {
@@ -61,9 +65,21 @@ impl eframe::App for MyApp {
                 });
             });
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.waveform_visualizer.update_axis(&mut plot_data);
-            let plot = GpuPlot::new(&mut plot_data);
-            plot.show(ui, WaveformVisualizerCallback::new(self.waveform_visualizer.clone()), );
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    self.waveform_visualizer.update_axis(&mut waveform_plot_data);
+                    let plot = GpuPlot::new(&mut waveform_plot_data);
+                    plot.show(ui, WaveformVisualizerCallback::new(self.waveform_visualizer.clone()));
+                });
+
+                ui.separator();
+
+                ui.vertical(|ui| {
+                    self.spectrum_visualizer.update_axis(&mut waveform_plot_data);
+                    let plot = GpuPlot::new(&mut waveform_plot_data);
+                    plot.show(ui, SpectrumVisualizerCallback::new(self.spectrum_visualizer.clone()));
+                });
+            });
         });
     }
 }
