@@ -1,9 +1,15 @@
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
+use std::mem::size_of;
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+use crate::sound::audio_service::AudioService;
+use crate::sound::AudioChannel;
+use crate::ui::plot::PlotData;
+
+const MAX_LINE_SEGMENTS: usize = 512;
 
 #[derive(Clone)]
 pub struct WaveformVisualizer(Arc<Inner>);
@@ -18,18 +24,25 @@ impl Deref for WaveformVisualizer {
 
 pub struct Inner {
     buffer: Mutex<Option<wgpu::Buffer>>,
+    audio_service: AudioService,
 }
 
 impl WaveformVisualizer {
-    pub fn new() -> Self {
+    pub fn new(audio_service: AudioService) -> Self {
         Self(Arc::new(Inner {
             buffer: Mutex::new(None),
+            audio_service,
         }))
+    }
+
+    pub fn update_axis(&self, plot_data: &mut PlotData) {
+        plot_data.x_axis = Some(crate::ui::plot::Axis { min: 0.0, max: 1.0, logarithmic: false });
+        plot_data.y_axis = Some(crate::ui::plot::Axis { min: -1.0, max: 1.0, logarithmic: false });
     }
 }
 
 pub struct WaveformVisualizerCallback {
-    visualizer: WaveformVisualizer
+    visualizer: WaveformVisualizer,
 }
 
 impl WaveformVisualizerCallback {
@@ -40,16 +53,12 @@ impl WaveformVisualizerCallback {
     }
 
     fn create_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-        let vertices: [[f32; 2]; 3] = [
-            [-0.5, -0.5],
-            [ 0.5,  0.5],
-            [ 0.5,  0.9],
-        ];
+        let vertices: [[f32; 2]; MAX_LINE_SEGMENTS] = [[0.0, 0.0]; MAX_LINE_SEGMENTS];
 
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Line Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         })
     }
 }
@@ -58,13 +67,14 @@ impl CallbackTrait for WaveformVisualizerCallback {
     fn prepare(
         &self,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
+        queue: &wgpu::Queue,
         _screen: &ScreenDescriptor,
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
         if resources.get::<wgpu::RenderPipeline>().is_none() {
-            println!("Creating pipeline");
+            resources.insert(queue.clone());
+
             self.visualizer.buffer.lock().unwrap().replace(WaveformVisualizerCallback::create_vertex_buffer(device));
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("line shader"),
@@ -86,7 +96,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                     entry_point: Option::from("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
+                        array_stride: size_of::<[f32; 2]>() as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &[wgpu::VertexAttribute {
                             offset: 0,
@@ -126,19 +136,40 @@ impl CallbackTrait for WaveformVisualizerCallback {
         pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
-        // Assume we already created pipeline elsewhere (e.g. in resources)
-        // Here we'll just set a pipeline and draw
         if let Some(pipeline) = resources.get::<wgpu::RenderPipeline>() {
-            let locked_buffer = self.visualizer.buffer.lock().unwrap();
+            let queue = resources.get::<wgpu::Queue>().unwrap();
+            let mut locked_buffer = self.visualizer.buffer.lock().unwrap();
             if locked_buffer.is_some() {
-                let buffer = locked_buffer.as_ref().unwrap();
+                let buffer = locked_buffer.as_mut().unwrap();
                 let nums = buffer.size() as usize / size_of::<f32>();
                 let points = (nums / 2) as u32;
                 let lines = points - 1;
+
+                let to_read = 48000;
+                let to_read = floor_to_nearest(to_read, points as usize);
+
+                let latest_samples = self.visualizer.audio_service.get_samples(AudioChannel::Master, to_read);
+                let step = latest_samples.len() / points as usize;
+
+                let mut vertices = vec![[0.0, 0.0]; points as usize];
+                for (i, sample) in latest_samples.iter().enumerate().step_by(step) {
+                    let j = i / step;
+                    if j >= points as usize {
+                        break;
+                    }
+                    vertices[j] = [i as f32 / latest_samples.len() as f32 * 2.0 - 1.0, *sample];
+                }
+
+                queue.write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.set_pipeline(pipeline);
                 pass.draw(0..points, 0..lines);
             }
         }
     }
+}
+
+fn floor_to_nearest(x: usize, n: usize) -> usize {
+    (x / n) * n
 }

@@ -13,3 +13,6 @@ env_logger = { version = "0.11.8", default-features = false, features = [
     "humantime",
 ] }
 bytemuck = "1.23.2"
+cpal = "0.16.0"
+circular-buffer = "1.2.0"
+rustfft = "6.4.1"
