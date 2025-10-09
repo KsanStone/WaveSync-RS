@@ -1,13 +1,13 @@
-use std::ops::Deref;
-use std::sync::{Arc, Mutex};
-use std::mem::size_of;
+use crate::sound::AudioChannel;
+use crate::sound::audio_service::AudioService;
+use crate::ui::plot::PlotData;
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use crate::sound::audio_service::AudioService;
-use crate::sound::AudioChannel;
-use crate::ui::plot::PlotData;
+use std::mem::size_of;
+use std::ops::Deref;
+use std::sync::{Arc, Mutex};
 
 const MAX_LINE_SEGMENTS: usize = 512;
 
@@ -36,8 +36,16 @@ impl WaveformVisualizer {
     }
 
     pub fn update_axis(&self, plot_data: &mut PlotData) {
-        plot_data.x_axis = Some(crate::ui::plot::Axis { min: 0.0, max: 1.0, logarithmic: false });
-        plot_data.y_axis = Some(crate::ui::plot::Axis { min: -1.0, max: 1.0, logarithmic: false });
+        plot_data.x_axis = Some(crate::ui::plot::Axis {
+            min: 0.0,
+            max: 1.0,
+            logarithmic: false,
+        });
+        plot_data.y_axis = Some(crate::ui::plot::Axis {
+            min: -1.0,
+            max: 1.0,
+            logarithmic: false,
+        });
     }
 }
 
@@ -47,9 +55,7 @@ pub struct WaveformVisualizerCallback {
 
 impl WaveformVisualizerCallback {
     pub(crate) fn new(visualizer: WaveformVisualizer) -> Self {
-        Self {
-            visualizer
-        }
+        Self { visualizer }
     }
 
     fn create_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {
@@ -75,18 +81,21 @@ impl CallbackTrait for WaveformVisualizerCallback {
         if resources.get::<wgpu::RenderPipeline>().is_none() {
             resources.insert(queue.clone());
 
-            self.visualizer.buffer.lock().unwrap().replace(WaveformVisualizerCallback::create_vertex_buffer(device));
+            self.visualizer
+                .buffer
+                .lock()
+                .unwrap()
+                .replace(WaveformVisualizerCallback::create_vertex_buffer(device));
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("line shader"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("../../../shader/line.wgsl").into()),
             });
 
-            let pipeline_layout =
-                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("waveform layout"),
-                    bind_group_layouts: &[],
-                    push_constant_ranges: &[],
-                });
+            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("waveform layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
 
             let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("waveform pipeline"),
@@ -148,7 +157,10 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 let to_read = 48000;
                 let to_read = floor_to_nearest(to_read, points as usize);
 
-                let latest_samples = self.visualizer.audio_service.get_samples(AudioChannel::Master, to_read);
+                let latest_samples = self
+                    .visualizer
+                    .audio_service
+                    .get_samples(AudioChannel::Master, to_read);
                 let step = latest_samples.len() / points as usize;
 
                 let mut vertices = vec![[0.0, 0.0]; points as usize];

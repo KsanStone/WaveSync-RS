@@ -9,5 +9,5 @@ pub struct CaptureSource {
     pub channels: u32,
     pub sample_rate: u32,
     pub format: SampleFormat,
-    pub backend: AudioBackendType
+    pub backend: AudioBackendType,
 }

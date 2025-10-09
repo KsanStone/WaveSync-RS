@@ -1,2 +1,2 @@
-pub mod visualizer;
 pub mod plot;
+pub mod visualizer;

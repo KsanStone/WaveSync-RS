@@ -3,7 +3,6 @@ use crate::sound::capture_source::CaptureSource;
 
 /// Interacts with the audio lib.
 pub trait AudioBackend: Send + Sync {
-
     fn detect_supported_capture_sources(&self) -> Vec<CaptureSource>;
 
     fn detect_supported_audio_systems(&self) -> Vec<AudioSystem>;
@@ -19,5 +18,4 @@ pub trait AudioBackend: Send + Sync {
     fn start_capture(&mut self, source: CaptureSource);
 
     fn stop_capture(&mut self);
-
 }

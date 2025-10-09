@@ -2,11 +2,13 @@ pub mod audio_backend;
 pub mod audio_service;
 pub mod audio_system;
 pub mod capture_source;
+pub mod cpal_audio_backend;
 pub mod dummy_audio_backend;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AudioBackendType {
     Dummy,
+    Cpal,
 }
 
 #[derive(Debug, Clone, Copy)]

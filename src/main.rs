@@ -1,12 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-mod ui;
 mod sound;
+mod ui;
 
 use crate::ui::plot::{GpuPlot, PlotData};
+use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
 use crate::ui::visualizer::waveform::{WaveformVisualizer, WaveformVisualizerCallback};
 use eframe::egui;
-use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
 
 fn main() -> eframe::Result {
     env_logger::init();
@@ -49,7 +49,7 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
         let mut waveform_plot_data = PlotData::default();
-        let mut spectrum_plot_data = PlotData::default();
+        let spectrum_plot_data = PlotData::default();
         egui::TopBottomPanel::bottom("bottom_bar")
             .resizable(false)
             .show(ctx, |ui| {
@@ -67,17 +67,25 @@ impl eframe::App for MyApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    self.waveform_visualizer.update_axis(&mut waveform_plot_data);
+                    self.waveform_visualizer
+                        .update_axis(&mut waveform_plot_data);
                     let plot = GpuPlot::new(&mut waveform_plot_data);
-                    plot.show(ui, WaveformVisualizerCallback::new(self.waveform_visualizer.clone()));
+                    plot.show(
+                        ui,
+                        WaveformVisualizerCallback::new(self.waveform_visualizer.clone()),
+                    );
                 });
 
                 ui.separator();
 
                 ui.vertical(|ui| {
-                    self.spectrum_visualizer.update_axis(&mut waveform_plot_data);
+                    self.spectrum_visualizer
+                        .update_axis(&mut waveform_plot_data);
                     let plot = GpuPlot::new(&mut waveform_plot_data);
-                    plot.show(ui, SpectrumVisualizerCallback::new(self.spectrum_visualizer.clone()));
+                    plot.show(
+                        ui,
+                        SpectrumVisualizerCallback::new(self.spectrum_visualizer.clone()),
+                    );
                 });
             });
         });
