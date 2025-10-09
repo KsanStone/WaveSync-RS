@@ -4,6 +4,7 @@ pub mod audio_system;
 pub mod capture_source;
 pub mod cpal_audio_backend;
 pub mod dummy_audio_backend;
+pub mod windowing;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AudioBackendType {
@@ -46,3 +47,14 @@ impl SampleFormat {
         }
     }
 }
+
+/// Computes the audio frequency that the given bin is associated with
+pub fn frequency_of_bin(bin: usize, rate: usize, fft_size: usize) -> f32 {
+    (bin as f32) * (rate as f32 / fft_size as f32)
+}
+
+/// Scale the magnitudes in accordance with the db scale
+pub fn db_scale_magnitudes(magnitudes: &mut [f32]) {
+    magnitudes.iter_mut().for_each(|m| *m = 20.0 * (*m).log10());
+}
+

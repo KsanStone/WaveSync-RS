@@ -1,34 +1,53 @@
-use eframe::egui::{Align2, FontId, Margin, Response, Sense, Ui};
+use eframe::egui::{Align2, FontFamily, FontId, Margin, Response, Sense, Ui};
 use eframe::emath::Pos2;
 use eframe::epaint::Color32;
 use egui_wgpu::CallbackTrait;
 use std::ops::Sub;
 
 const PLOT_DIGITS: usize = 2;
+const X_AXIS_WIDTH: i8 = 15;
+const Y_AXIS_WIDTH: i8 = 30;
 
 #[derive(Clone)]
 pub struct PlotData {
-    pub x_axis: Option<Axis>,
+    pub x_axis: Axis,
     pub x_axis_grid: bool,
-    pub y_axis: Option<Axis>,
+    pub x_axis_shown: bool,
+    pub y_axis: Axis,
     pub y_axis_grid: bool,
+    pub y_axis_shown: bool,
 }
 
 impl Default for PlotData {
     fn default() -> Self {
         Self {
-            x_axis: Some(Axis {
+            x_axis: Axis {
                 min: 0.0,
                 max: 100.0,
                 logarithmic: false,
-            }),
+            },
             x_axis_grid: true,
-            y_axis: Some(Axis {
+            x_axis_shown: true,
+            y_axis: Axis {
                 min: 0.0,
                 max: 100.0,
                 logarithmic: false,
-            }),
+            },
             y_axis_grid: true,
+            y_axis_shown: true,
+        }
+    }
+}
+
+impl PlotData {
+    pub fn from_axis(x_axis: Axis, y_axis: Axis) -> Self {
+        Self {
+            x_axis,
+            x_axis_grid: true,
+            x_axis_shown: true,
+            y_axis,
+            y_axis_grid: true,
+            y_axis_shown: true,
         }
     }
 }
@@ -41,44 +60,95 @@ pub struct Axis {
 }
 
 impl Axis {
-    pub fn new(min: f32, max: f32, logarithmic: bool) -> Self {
+    pub fn linear(min: f32, max: f32) -> Self {
         Self {
             min,
             max,
-            logarithmic,
+            logarithmic: false,
         }
+    }
+
+    pub fn logarithmic(min: f32, max: f32) -> Self {
+        Self {
+            min,
+            max,
+            logarithmic: true,
+        }
+    }
+
+    pub fn log_lower_bound(&self) -> f32 {
+        Self::log(self.min)
+    }
+
+    pub fn log_upper_bound(&self) -> f32 {
+        Self::log(self.max)
     }
 
     /// Returns the positions for ticks in axis-space
     pub fn tick_positions(&self, px_size: f32) -> Vec<f32> {
-        const LABEL_SPACING_PX: f32 = 60.0;
-        let labels = (px_size / LABEL_SPACING_PX + 1.0).max(2.0).floor();
-        let step = (self.max - self.min) / (labels - 1.0);
+        let mut tick_positions = vec![];
+        if !self.logarithmic {
+            const LABEL_SPACING_PX: f32 = 60.0;
+            let labels = (px_size / LABEL_SPACING_PX + 1.0).max(2.0).floor();
+            let step = (self.max - self.min) / (labels - 1.0);
 
-        let mut pos = self.min;
-        let mut label_positons = vec![];
-        for _ in 0..labels as usize {
-            label_positons.push(pos);
-            pos += step;
+            let mut pos = self.min;
+
+            for _ in 0..labels as usize {
+                tick_positions.push(pos);
+                pos += step;
+            }
+        } else {
+            let mut i = self.log_lower_bound();
+
+            println!("log lower bound: {} {}", i, 10.0f32.powf(i));
+
+            while i <= self.log_upper_bound() {
+                for j in 1 ..= 9 {
+                    let v = j as f32 * 10.0f32.powf(i);
+                    tick_positions.push(v);
+                }
+                i += 1.0
+            }
         }
-        label_positons
+        tick_positions
     }
 
     /// Maps a value in axis-space to a pixel position
-    pub fn px_pos(&self, value: f32, px_min: f32, px_max: f32) -> f32 {
-        let range = self.max - self.min;
-        let pos = (value - self.min) / range * (px_max - px_min);
-        pos + px_min
+    pub fn val_to_pos(&self, value: f32, pos_min: f32, pos_max: f32) -> f32 {
+        if !self.logarithmic {
+            let range = self.max - self.min;
+            let pos = (value - self.min) / range * (pos_max - pos_min);
+            pos + pos_min
+        } else {
+            let delta = self.log_upper_bound() - self.log_lower_bound();
+            let delta_v = Self::log(value) - self.log_lower_bound();
+            (delta_v) / delta * (pos_max - pos_min) + pos_min
+        }
+    }
+
+    /// Utility to convert to gl coordinate space
+    pub fn gl_pos(&self, value: f32) -> f32 {
+        self.val_to_pos(value, -1.0, 1.0)
+    }
+
+    fn log(val: f32) -> f32 {
+        if val <= 0.0 {
+            0.0
+        } else {
+            val.log10()
+        }
     }
 }
 
-pub struct GpuPlot<'a> {
+/// Generic plot, to be used as a background for the visualizers.
+pub struct Plot<'a> {
     plot_data: &'a mut PlotData,
     grid_color: Color32,
     label_color: Color32,
 }
 
-impl<'a> GpuPlot<'a> {
+impl<'a> Plot<'a> {
     pub fn new(data: &'a mut PlotData) -> Self {
         Self {
             plot_data: data,
@@ -91,27 +161,28 @@ impl<'a> GpuPlot<'a> {
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
 
-        const AXIS_WIDTH: i8 = 30;
-
         let painter = ui.painter();
         let content_rect = rect.sub(Margin {
-            left: if self.plot_data.y_axis.is_some() {
-                AXIS_WIDTH
+            left: if self.plot_data.y_axis_shown {
+                Y_AXIS_WIDTH
             } else {
                 0
             },
             right: 0,
             top: 0,
-            bottom: if self.plot_data.x_axis.is_some() {
-                AXIS_WIDTH
+            bottom: if self.plot_data.x_axis_shown {
+                X_AXIS_WIDTH
             } else {
                 0
             },
         });
 
-        if let Some(axis) = self.plot_data.x_axis.as_ref() {
-            for pos in axis.tick_positions(content_rect.width()) {
-                let px_pos = axis.px_pos(pos, content_rect.min.x, content_rect.max.x);
+        if self.plot_data.x_axis_shown {
+            for pos in self.plot_data.x_axis.tick_positions(content_rect.width()) {
+                let px_pos =
+                    self.plot_data
+                        .x_axis
+                        .val_to_pos(pos, content_rect.min.x, content_rect.max.x);
                 painter.line_segment(
                     [
                         Pos2::new(px_pos, content_rect.min.y),
@@ -122,16 +193,19 @@ impl<'a> GpuPlot<'a> {
                 painter.text(
                     Pos2::new(px_pos, content_rect.max.y + 2.0),
                     Align2::CENTER_TOP,
-                    format_significant(pos, PLOT_DIGITS),
-                    FontId::default(),
+                    label_format(pos, PLOT_DIGITS),
+                    FontId::new(10.0, FontFamily::Monospace),
                     self.label_color,
                 );
             }
         }
 
-        if let Some(axis) = self.plot_data.y_axis.as_ref() {
-            for pos in axis.tick_positions(content_rect.height()) {
-                let px_pos = axis.px_pos(pos, content_rect.min.y, content_rect.max.y);
+        if self.plot_data.y_axis_shown {
+            for pos in self.plot_data.y_axis.tick_positions(content_rect.height()) {
+                let px_pos =
+                    self.plot_data
+                        .y_axis
+                        .val_to_pos(pos, content_rect.max.y, content_rect.min.y);
                 painter.line_segment(
                     [
                         Pos2::new(content_rect.min.x, px_pos),
@@ -140,10 +214,10 @@ impl<'a> GpuPlot<'a> {
                     (1.0, self.grid_color),
                 );
                 painter.text(
-                    Pos2::new(rect.min.x + 2.0, px_pos),
-                    Align2::LEFT_CENTER,
-                    format_significant(pos, PLOT_DIGITS),
-                    FontId::default(),
+                    Pos2::new(content_rect.min.x - 2.0, px_pos),
+                    Align2::RIGHT_CENTER,
+                    label_format(pos, PLOT_DIGITS),
+                    FontId::new(10.0, FontFamily::Monospace),
                     self.label_color,
                 );
             }
@@ -158,17 +232,41 @@ impl<'a> GpuPlot<'a> {
     }
 }
 
-fn format_significant(x: f32, n: usize) -> String {
+/// Formats small values with at most n significant digits,
+/// abbreviates large values to for ex. 20k, 1M
+/// and rounds vals, to make the fit and look nice on sound-related charts.
+fn label_format(x: f32, n: usize) -> String {
     if x.abs() < 0.00001 {
-        return format!("{:.1}", 0.0);
+        return "0".to_string();
     }
-    let log = x.abs().log10().floor();
+
+    // Handle large numbers with suffixes
+    let (val, suffix) = if x.abs() >= 1_000_000_000.0 {
+        (x / 1_000_000_000.0, "B")
+    } else if x.abs() >= 1_000_000.0 {
+        (x / 1_000_000.0, "M")
+    } else if x.abs() >= 1_000.0 {
+        (x / 1_000.0, "k")
+    } else {
+        (x, "")
+    };
+
+    // Scale and round to n significant digits
+    let log = val.abs().log10().floor();
     let scale = 10f32.powf(n as f32 - log - 1.0);
-    let rounded = (x * scale).round() / scale;
+    let mut rounded = (val * scale).round() / scale;
+
+    // If value is large (>100), round to nearest integer
+    if rounded.abs() >= 100.0 {
+        rounded = rounded.round();
+    }
+
     let s = format!("{}", rounded);
-    if s.contains('.') {
+    let s = if s.contains('.') {
         s.trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
         s
-    }
+    };
+
+    format!("{}{}", s, suffix)
 }

@@ -1,51 +1,41 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::ui::plot::PlotData;
+use crate::{define_resource, deref_arc};
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+use log::info;
 use std::mem::size_of;
-use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 const MAX_LINE_SEGMENTS: usize = 512;
 
-#[derive(Clone)]
-pub struct WaveformVisualizer(Arc<Inner>);
-
-impl Deref for WaveformVisualizer {
-    type Target = Inner;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
-    }
-}
+deref_arc!(WaveformVisualizer);
 
 pub struct Inner {
-    buffer: Mutex<Option<wgpu::Buffer>>,
     audio_service: AudioService,
 }
 
 impl WaveformVisualizer {
     pub fn new(audio_service: AudioService) -> Self {
         Self(Arc::new(Inner {
-            buffer: Mutex::new(None),
             audio_service,
         }))
     }
 
     pub fn update_axis(&self, plot_data: &mut PlotData) {
-        plot_data.x_axis = Some(crate::ui::plot::Axis {
+        plot_data.x_axis = crate::ui::plot::Axis {
             min: 0.0,
             max: 1.0,
             logarithmic: false,
-        });
-        plot_data.y_axis = Some(crate::ui::plot::Axis {
+        };
+        plot_data.y_axis = crate::ui::plot::Axis {
             min: -1.0,
             max: 1.0,
             logarithmic: false,
-        });
+        };
     }
 }
 
@@ -69,6 +59,9 @@ impl WaveformVisualizerCallback {
     }
 }
 
+define_resource!(WaveformPipeline, wgpu::RenderPipeline);
+define_resource!(WaveformVertexBuffer, wgpu::Buffer);
+
 impl CallbackTrait for WaveformVisualizerCallback {
     fn prepare(
         &self,
@@ -78,14 +71,11 @@ impl CallbackTrait for WaveformVisualizerCallback {
         _encoder: &mut wgpu::CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        if resources.get::<wgpu::RenderPipeline>().is_none() {
+        if resources.get::<WaveformPipeline>().is_none() {
+            info!("Creating waveform pipeline");
             resources.insert(queue.clone());
+            resources.insert(WaveformVertexBuffer(WaveformVisualizerCallback::create_vertex_buffer(device)));
 
-            self.visualizer
-                .buffer
-                .lock()
-                .unwrap()
-                .replace(WaveformVisualizerCallback::create_vertex_buffer(device));
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("line shader"),
                 source: wgpu::ShaderSource::Wgsl(include_str!("../../../shader/line.wgsl").into()),
@@ -134,7 +124,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 cache: None,
             });
 
-            resources.insert(pipeline);
+            resources.insert(WaveformPipeline(pipeline));
         }
         Vec::new()
     }
@@ -145,14 +135,12 @@ impl CallbackTrait for WaveformVisualizerCallback {
         pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
-        if let Some(pipeline) = resources.get::<wgpu::RenderPipeline>() {
+        if let Some(pipeline) = resources.get::<WaveformPipeline>() {
             let queue = resources.get::<wgpu::Queue>().unwrap();
-            let mut locked_buffer = self.visualizer.buffer.lock().unwrap();
-            if locked_buffer.is_some() {
-                let buffer = locked_buffer.as_mut().unwrap();
+            let mut locked_buffer = resources.get::<WaveformVertexBuffer>();
+            if let Some(buffer) = locked_buffer.as_mut() {
                 let nums = buffer.size() as usize / size_of::<f32>();
                 let points = (nums / 2) as u32;
-                let lines = points - 1;
 
                 let to_read = 48000;
                 let to_read = floor_to_nearest(to_read, points as usize);
@@ -161,9 +149,10 @@ impl CallbackTrait for WaveformVisualizerCallback {
                     .visualizer
                     .audio_service
                     .get_samples(AudioChannel::Master, to_read);
-                let step = latest_samples.len() / points as usize;
+                let step = (latest_samples.len() / points as usize).max(1);
 
-                let mut vertices = vec![[0.0, 0.0]; points as usize];
+
+                let mut vertices = vec![[0.0, 0.0]; (points as usize).min(latest_samples.len())];
                 for (i, sample) in latest_samples.iter().enumerate().step_by(step) {
                     let j = i / step;
                     if j >= points as usize {
@@ -174,9 +163,11 @@ impl CallbackTrait for WaveformVisualizerCallback {
 
                 queue.write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
 
+                let vertices = points.min(latest_samples.len() as u32);
+                
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.set_pipeline(pipeline);
-                pass.draw(0..points, 0..lines);
+                pass.draw(0..vertices, 0..vertices.saturating_sub(1));
             }
         }
     }

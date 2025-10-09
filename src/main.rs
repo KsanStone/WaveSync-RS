@@ -3,12 +3,18 @@
 mod sound;
 mod ui;
 
-use crate::ui::plot::{GpuPlot, PlotData};
+use crate::ui::plot::{Plot, PlotData};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
+use crate::ui::visualizer::visualizer_trait::Visualizer;
 use crate::ui::visualizer::waveform::{WaveformVisualizer, WaveformVisualizerCallback};
 use eframe::egui;
+use egui_extras::{Size, StripBuilder};
+use std::env;
 
 fn main() -> eframe::Result {
+    if env::var("RUST_LOG").is_err() {
+        unsafe { env::set_var("RUST_LOG", "info") }
+    }
     env_logger::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
@@ -17,9 +23,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Wavesync",
         options,
-        Box::new(|cc| {
-            egui_extras::install_image_loaders(&cc.egui_ctx);
-
+        Box::new(|_cc| {
             Ok(Box::<MyApp>::default())
         }),
     )
@@ -47,9 +51,9 @@ impl Default for MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        catppuccin_egui::set_theme(ctx, catppuccin_egui::MOCHA);
         ctx.request_repaint();
         let mut waveform_plot_data = PlotData::default();
-        let spectrum_plot_data = PlotData::default();
         egui::TopBottomPanel::bottom("bottom_bar")
             .resizable(false)
             .show(ctx, |ui| {
@@ -65,29 +69,27 @@ impl eframe::App for MyApp {
                 });
             });
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    self.waveform_visualizer
-                        .update_axis(&mut waveform_plot_data);
-                    let plot = GpuPlot::new(&mut waveform_plot_data);
-                    plot.show(
-                        ui,
-                        WaveformVisualizerCallback::new(self.waveform_visualizer.clone()),
-                    );
+            StripBuilder::new(ui)
+                .sizes(Size::remainder(), 2)
+                .vertical(|mut strip| {
+                    strip.cell(|ui| {
+                        self.waveform_visualizer
+                            .update_axis(&mut waveform_plot_data);
+                        let plot = Plot::new(&mut waveform_plot_data);
+                        plot.show(
+                            ui,
+                            WaveformVisualizerCallback::new(self.waveform_visualizer.clone()),
+                        );
+                    });
+                    strip.cell(|ui| {
+                        let mut plot_data = self.spectrum_visualizer.get_plot_data();
+                        let plot = Plot::new(&mut plot_data);
+                        plot.show(
+                            ui,
+                            SpectrumVisualizerCallback::new(self.spectrum_visualizer.clone()),
+                        );
+                    });
                 });
-
-                ui.separator();
-
-                ui.vertical(|ui| {
-                    self.spectrum_visualizer
-                        .update_axis(&mut waveform_plot_data);
-                    let plot = GpuPlot::new(&mut waveform_plot_data);
-                    plot.show(
-                        ui,
-                        SpectrumVisualizerCallback::new(self.spectrum_visualizer.clone()),
-                    );
-                });
-            });
         });
     }
 }

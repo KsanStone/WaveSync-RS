@@ -2,14 +2,14 @@ use crate::sound::AudioChannel;
 use crate::sound::capture_source::CaptureSource;
 use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use circular_buffer::CircularBuffer;
-use log::debug;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use crate::sound::windowing::{FftWindow, WindowMethod};
 
-const CHANNELS: usize = 1;
+const CHANNELS: usize = 3;
 
 #[derive(Clone)]
 pub struct AudioService(Arc<Inner>);
@@ -26,13 +26,14 @@ impl AudioService {
         let mut planner = FftPlanner::new();
         AudioService(Arc::new(Inner {
             audio_backend: Mutex::new(Box::new(CpalAudioBackend::new_with_fallback())),
-            audio_buffer: Mutex::new([CircularBuffer::boxed()]),
-            latest_fft: Mutex::new([vec![]]),
+            audio_buffer: Mutex::new([CircularBuffer::boxed(), CircularBuffer::boxed(), CircularBuffer::boxed()]),
+            latest_fft: Mutex::new([vec![], vec![], vec![]]),
             samples_written: Default::default(),
             last_fft_idx: Default::default(),
             current_capture_source: Mutex::new(None),
-            fft_plan: Mutex::new(planner.plan_fft_forward(256)),
+            fft_plan: Mutex::new(planner.plan_fft_forward(4096)),
             planner: Mutex::new(planner),
+            fft_window: Mutex::new(FftWindow::new(WindowMethod::Hamming)),
         }))
     }
 
@@ -77,7 +78,8 @@ impl AudioService {
             "\n▶️  Starting capture from: {} (ID: {})",
             source.name, source.id
         );
-        backend.start_capture(source)
+        backend.start_capture(source.clone());
+        self.current_capture_source.lock().unwrap().replace(source);
     }
 }
 
@@ -90,6 +92,7 @@ pub struct Inner {
     current_capture_source: Mutex<Option<CaptureSource>>,
     planner: Mutex<FftPlanner<f32>>,
     fft_plan: Mutex<Arc<dyn rustfft::Fft<f32>>>,
+    fft_window: Mutex<FftWindow>,
 }
 
 impl Inner {
@@ -106,9 +109,17 @@ impl Inner {
             1
         } else {
             // Stereo audio, store per-channel data, and later mix them together into master buffer
-            let channels = buffer.len().saturating_sub(1).min(samples.len());
+            let channels = buffer.len().saturating_sub(1).max(1).min(samples.len());
             for i in 0..channels {
                 buffer[i + 1].extend_from_slice(samples[i].deref());
+            }
+            let scalar = 1.0 / channels as f32;
+            for i in 0..samples[0].len() {
+                let mut v = 0.0;
+                for item in &samples {
+                    v += item[i];
+                }
+                buffer[0].push_back(v * scalar);
             }
             channels + 1
         };
@@ -119,7 +130,7 @@ impl Inner {
     }
 
     fn do_fft(&self, channels: usize) {
-        let fft_sample_offset = 4096;
+        let fft_sample_offset = 1000;
         let samples_written = self.samples_written.load(Ordering::Acquire);
         let mut last_fft_idx = self.last_fft_idx.load(Ordering::Acquire);
         let mut latest_fft = self.latest_fft.lock().unwrap();
@@ -127,6 +138,7 @@ impl Inner {
         let to_do = since_last_fft / fft_sample_offset;
         let audio_buffer = self.audio_buffer.lock().unwrap();
         let fft_plan = self.fft_plan.lock().unwrap();
+        let mut fft_window = self.fft_window.lock().unwrap();
 
         for _ in 0..to_do {
             last_fft_idx += fft_sample_offset;
@@ -141,30 +153,24 @@ impl Inner {
                     .saturating_sub(offset_from_buffer_end as usize);
                 let start_idx = end_idx.saturating_sub(fft_plan.len());
                 if end_idx - start_idx != fft_plan.len() {
-                    debug!(
-                        "Buffer too smol {} {} {}",
-                        end_idx,
-                        start_idx,
-                        end_idx - start_idx
-                    );
                     continue;
-                } else {
-                    debug!(
-                        "Buffer ok {} {} {}",
-                        end_idx,
-                        start_idx,
-                        end_idx - start_idx
-                    );
                 }
 
                 let sample_iter = audio_buffer[i].range(start_idx..end_idx);
+                let (window_scalar, window)  = fft_window.get_window(fft_plan.len());
+
                 let mut fft_in = sample_iter
-                    .map(|sample| Complex::new(*sample, 0.0f32))
+                    .enumerate()
+                    .map(|(i, sample)| Complex::new(*sample * window[i], 0.0f32))
                     .collect::<Vec<_>>();
                 fft_plan.process(&mut fft_in);
-                let mut magnitudes = fft_in.iter().map(|x| x.norm()).collect::<Vec<_>>();
-                let scalar = 1.0 / magnitudes.len() as f32;
-                magnitudes.iter_mut().for_each(|x| *x *= scalar);
+
+                let mut magnitudes = fft_in[0..fft_plan.len() / 2]
+                    .iter()
+                    .map(|x| x.norm())
+                    .collect::<Vec<_>>();
+
+                magnitudes.iter_mut().for_each(|x| *x *= window_scalar);
                 latest_fft[i] = magnitudes;
             }
             self.last_fft_idx.store(last_fft_idx, Ordering::Release);
@@ -173,11 +179,19 @@ impl Inner {
 
     pub fn get_samples(&self, channel: AudioChannel, count: usize) -> Vec<f32> {
         let buffer = &self.audio_buffer.lock().unwrap()[channel.get_index()];
-        buffer.range(..count).copied().collect()
+        buffer.range(..count.min(buffer.len())).copied().collect()
     }
 
     pub fn get_fft(&self, channel: AudioChannel) -> Vec<f32> {
         let latest_fft = &self.latest_fft.lock().unwrap()[channel.get_index()];
         latest_fft.clone()
+    }
+
+    pub fn get_source(&self) -> CaptureSource {
+        if let Some(source) = self.current_capture_source.lock().unwrap().as_ref() {
+            source.clone()
+        } else {
+            Default::default()
+        }
     }
 }

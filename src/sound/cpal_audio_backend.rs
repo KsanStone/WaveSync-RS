@@ -1,14 +1,15 @@
-use crate::sound::audio_backend::AudioBackend;
+use crate::sound::audio_backend::{AudioBackend, OptionCaptureCallback};
 use crate::sound::audio_system::AudioSystem;
 use crate::sound::capture_source::CaptureSource;
 use crate::sound::{AudioBackendType, SampleFormat};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, Host, SampleFormat as CpalSampleFormat, Stream, StreamConfig};
+use cpal::{Device, Host, Stream, StreamConfig};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
+use log::error;
 
 pub struct CpalAudioBackend {
-    capture_callback: Option<Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>>,
+    capture_callback: OptionCaptureCallback,
     audio_system: AudioSystem,
     capture_source: CaptureSource,
     sequence_index: Arc<AtomicUsize>,
@@ -18,15 +19,6 @@ pub struct CpalAudioBackend {
 }
 
 impl CpalAudioBackend {
-    fn sample_format_from_cpal(cpal_format: CpalSampleFormat) -> SampleFormat {
-        match cpal_format {
-            CpalSampleFormat::U8 => SampleFormat::U8,
-            CpalSampleFormat::I16 => SampleFormat::I16,
-            CpalSampleFormat::I32 => SampleFormat::I32,
-            CpalSampleFormat::F32 => SampleFormat::F32,
-            _ => SampleFormat::F32, // Default fallback
-        }
-    }
     pub fn new() -> Self {
         Self::new_with_host(cpal::default_host())
     }
@@ -41,7 +33,7 @@ impl CpalAudioBackend {
                 devices_vec
             }
             Err(e) => {
-                eprintln!("❌ Warning: Could not enumerate input devices: {}", e);
+                error!("❌ Warning: Could not enumerate input devices: {}", e);
                 Vec::new()
             }
         };
@@ -87,6 +79,7 @@ impl CpalAudioBackend {
             capture_source: CaptureSource {
                 name: "Default Input Device".to_string(),
                 id: "default_input".to_string(),
+                is_loopback: false,
                 channels: 2,
                 sample_rate: 48000,
                 format: SampleFormat::F32,
@@ -124,6 +117,7 @@ impl AudioBackend for CpalAudioBackend {
 
                     sources.push(CaptureSource {
                         name: display_name,
+                        is_loopback,
                         id: format!("input_device_{}", index),
                         channels: config.channels() as u32,
                         sample_rate: config.sample_rate().0,
@@ -139,6 +133,7 @@ impl AudioBackend for CpalAudioBackend {
                             let display_name = format!("🔄 {} (Loopback)", device_name);
                             sources.push(CaptureSource {
                                 name: display_name,
+                                is_loopback,
                                 id: format!("loopback_device_{}", index),
                                 channels: output_config.channels() as u32,
                                 sample_rate: output_config.sample_rate().0,
@@ -176,6 +171,7 @@ impl AudioBackend for CpalAudioBackend {
                     sample_rate: config.sample_rate().0,
                     format: SampleFormat::F32,
                     backend: AudioBackendType::Cpal,
+                    is_loopback: false,
                 });
             }
         }
@@ -194,7 +190,61 @@ impl AudioBackend for CpalAudioBackend {
     }
 
     fn find_default_capture_source(&self) -> CaptureSource {
-        // Return the first available real device, or a placeholder if none available
+        // First, try to find the default output device as loopback
+        if let Some(default_output) = self.host.default_output_device() {
+            // Check if this device is in our input_devices list (as loopback)
+            for (index, device) in self.input_devices.iter().enumerate() {
+                if let (Ok(device_name), Ok(default_name)) = (device.name(), default_output.name())
+                {
+                    if device_name == default_name {
+                        // This is the default output device being used as loopback
+                        let is_loopback = self.is_loopback_device(device, index);
+
+                        if is_loopback {
+                            // Try to get output config for loopback devices
+                            if let Ok(output_config) = device.default_output_config() {
+                                return CaptureSource {
+                                    name: format!("🔄 {} (Default Output Loopback)", default_name),
+                                    id: format!("loopback_device_{}", index),
+                                    channels: output_config.channels() as u32,
+                                    sample_rate: output_config.sample_rate().0,
+                                    format: SampleFormat::F32,
+                                    backend: AudioBackendType::Cpal,
+                                    is_loopback: true,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no default output loopback found, look for any loopback device
+        let original_input_count = match self.host.input_devices() {
+            Ok(devices) => devices.count(),
+            Err(_) => 0,
+        };
+
+        for (index, device) in self.input_devices.iter().enumerate() {
+            if index >= original_input_count {
+                // This is a loopback device
+                if let Ok(device_name) = device.name() {
+                    if let Ok(output_config) = device.default_output_config() {
+                        return CaptureSource {
+                            name: format!("🔄 {} (Loopback)", device_name),
+                            id: format!("loopback_device_{}", index),
+                            channels: output_config.channels() as u32,
+                            sample_rate: output_config.sample_rate().0,
+                            format: SampleFormat::F32,
+                            backend: AudioBackendType::Cpal,
+                            is_loopback: true,
+                        };
+                    }
+                }
+            }
+        }
+
+        // Fall back to the first available real input device if no loopback devices found
         if let Some(first_device) = self.input_devices.first()
             && let Ok(config) = first_device.default_input_config()
         {
@@ -207,10 +257,11 @@ impl AudioBackend for CpalAudioBackend {
                 sample_rate: config.sample_rate().0,
                 format: SampleFormat::F32,
                 backend: AudioBackendType::Cpal,
+                is_loopback: false,
             };
         }
 
-        // Fallback if no devices available
+        // Final fallback if no devices available
         CaptureSource {
             name: "No Audio Devices".to_string(),
             id: "none".to_string(),
@@ -218,6 +269,7 @@ impl AudioBackend for CpalAudioBackend {
             sample_rate: 0,
             format: SampleFormat::F32,
             backend: AudioBackendType::Cpal,
+            is_loopback: false,
         }
     }
 
@@ -237,94 +289,168 @@ impl AudioBackend for CpalAudioBackend {
             drop(stream);
         }
 
-        // Get the device to use
-        let device = if let Some(stripped) = source.id.strip_prefix("input_device_") {
-            let device_index = stripped.parse::<usize>().unwrap_or(0);
-            if let Some(device) = self.input_devices.get(device_index) {
-                device.clone()
-            } else {
-                eprintln!("Input device not found: {}", source.id);
-                return;
-            }
-        } else if let Some(stripped) = source.id.strip_prefix("loopback_device_") {
-            let device_index = stripped.parse::<usize>().unwrap_or(0);
-            if let Some(device) = self.input_devices.get(device_index) {
-                device.clone()
-            } else {
-                eprintln!("Loopback device not found: {}", source.id);
-                return;
-            }
+        // Determine if this is a loopback device
+        let is_loopback = source.id.starts_with("loopback_device_");
+        let device_index = if let Some(stripped) = source
+            .id
+            .strip_prefix("input_device_")
+            .or_else(|| source.id.strip_prefix("loopback_device_"))
+        {
+            stripped.parse::<usize>().unwrap_or(0)
         } else {
             eprintln!("Unknown device type: {}", source.id);
             return;
         };
 
-        // Get the input config
-        let config = match device.default_input_config() {
-            Ok(config) => config,
-            Err(e) => {
-                // For loopback devices, try a different approach
-                if source.id.starts_with("loopback_device_") {
-                    // Try to use the default input device as a proxy for system audio
-                    if let Some(default_input) = self.host.default_input_device()
-                        && let Ok(_fallback_config) = default_input.default_input_config()
-                    {
-                        return; // For now, we'll need more sophisticated implementation
-                    }
-                }
-
-                eprintln!(
-                    "Error getting input config for device '{}': {}",
-                    device.name().unwrap_or_else(|_| "Unknown".to_string()),
-                    e
-                );
-                return;
-            }
+        let device = if let Some(device) = self.input_devices.get(device_index) {
+            device.clone()
+        } else {
+            eprintln!("Device not found: {}", source.id);
+            return;
         };
 
         let callback = self.capture_callback.as_ref().unwrap().clone();
-        let channels = config.channels() as usize;
 
-        // Create the stream - all formats will be converted to f32
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => {
-                self.create_stream_f32(&device, &config.into(), callback, channels)
-            }
-            cpal::SampleFormat::I16 => {
-                self.create_stream_i16(&device, &config.into(), callback, channels)
-            }
-            cpal::SampleFormat::U16 => {
-                self.create_stream_u16(&device, &config.into(), callback, channels)
-            }
-            cpal::SampleFormat::I32 => {
-                self.create_stream_i32(&device, &config.into(), callback, channels)
-            }
-            cpal::SampleFormat::U8 => {
-                self.create_stream_u8(&device, &config.into(), callback, channels)
-            }
-            _ => {
-                eprintln!("Unsupported sample format: {:?}", config.sample_format());
-                return;
-            }
-        };
+        // For loopback devices, always use shared mode loopback capture
+        if is_loopback {
+            println!(
+                "🔄 Starting shared mode loopback capture for device: '{}'",
+                device.name().unwrap_or_else(|_| "Unknown".to_string())
+            );
 
-        match stream {
-            Ok(stream) => {
-                self.current_stream = Some(stream);
-                if let Err(e) = self.current_stream.as_ref().unwrap().play() {
+            // For Windows WASAPI, use output config for shared loopback capture
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(output_config) = device.default_output_config() {
+                    println!("✅ Using Windows WASAPI shared mode loopback capture");
+                    // Use the output config for shared mode capture
+                    let config = StreamConfig {
+                        channels: output_config.channels(),
+                        sample_rate: output_config.sample_rate(),
+                        buffer_size: cpal::BufferSize::Default,
+                    };
+
+                    let channels = output_config.channels() as usize;
+                    let callback = self.capture_callback.as_ref().unwrap().clone();
+
+                    // Create shared mode loopback stream
+                    let stream = match output_config.sample_format() {
+                        cpal::SampleFormat::F32 => self.create_shared_loopback_stream_f32(
+                            &device, &config, callback, channels,
+                        ),
+                        cpal::SampleFormat::I16 => self.create_shared_loopback_stream_i16(
+                            &device, &config, callback, channels,
+                        ),
+                        cpal::SampleFormat::U16 => self.create_shared_loopback_stream_u16(
+                            &device, &config, callback, channels,
+                        ),
+                        cpal::SampleFormat::I32 => self.create_shared_loopback_stream_i32(
+                            &device, &config, callback, channels,
+                        ),
+                        cpal::SampleFormat::U8 => self
+                            .create_shared_loopback_stream_u8(&device, &config, callback, channels),
+                        _ => {
+                            eprintln!(
+                                "❌ Unsupported sample format for shared loopback: {:?}",
+                                output_config.sample_format()
+                            );
+                            return;
+                        }
+                    };
+
+                    match stream {
+                        Ok(stream) => {
+                            self.current_stream = Some(stream);
+                            if let Err(e) = self.current_stream.as_ref().unwrap().play() {
+                                eprintln!(
+                                    "❌ Error starting shared loopback capture for device '{}': {}",
+                                    device.name().unwrap_or_else(|_| "Unknown".to_string()),
+                                    e
+                                );
+                            } else {
+                                println!(
+                                    "✅ Successfully started shared loopback capture for device: {}",
+                                    device.name().unwrap_or_else(|_| "Unknown".to_string())
+                                );
+                            }
+                            return;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "❌ Error creating shared loopback stream for device '{}': {}",
+                                device.name().unwrap_or_else(|_| "Unknown".to_string()),
+                                e
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Fallback for non-Windows platforms or if output config fails
+            eprintln!(
+                "❌ Loopback device '{}' shared mode is not available on this platform.",
+                device.name().unwrap_or_else(|_| "Unknown".to_string())
+            );
+            eprintln!("This device cannot be used for loopback capture on this platform.");
+            return;
+        } else {
+            // For regular input devices, use the existing logic
+            let config = match device.default_input_config() {
+                Ok(config) => config,
+                Err(e) => {
                     eprintln!(
-                        "Error starting capture for device '{}': {}",
+                        "Error getting input config for device '{}': {}",
+                        device.name().unwrap_or_else(|_| "Unknown".to_string()),
+                        e
+                    );
+                    return;
+                }
+            };
+
+            let channels = config.channels() as usize;
+
+            // Create the stream - all formats will be converted to f32
+            let stream = match config.sample_format() {
+                cpal::SampleFormat::F32 => {
+                    self.create_stream_f32(&device, &config.into(), callback, channels)
+                }
+                cpal::SampleFormat::I16 => {
+                    self.create_stream_i16(&device, &config.into(), callback, channels)
+                }
+                cpal::SampleFormat::U16 => {
+                    self.create_stream_u16(&device, &config.into(), callback, channels)
+                }
+                cpal::SampleFormat::I32 => {
+                    self.create_stream_i32(&device, &config.into(), callback, channels)
+                }
+                cpal::SampleFormat::U8 => {
+                    self.create_stream_u8(&device, &config.into(), callback, channels)
+                }
+                _ => {
+                    eprintln!("Unsupported sample format: {:?}", config.sample_format());
+                    return;
+                }
+            };
+
+            match stream {
+                Ok(stream) => {
+                    self.current_stream = Some(stream);
+                    if let Err(e) = self.current_stream.as_ref().unwrap().play() {
+                        eprintln!(
+                            "Error starting capture for device '{}': {}",
+                            device.name().unwrap_or_else(|_| "Unknown".to_string()),
+                            e
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Error creating stream for device '{}': {}",
                         device.name().unwrap_or_else(|_| "Unknown".to_string()),
                         e
                     );
                 }
-            }
-            Err(e) => {
-                eprintln!(
-                    "Error creating stream for device '{}': {}",
-                    device.name().unwrap_or_else(|_| "Unknown".to_string()),
-                    e
-                );
             }
         }
     }
@@ -471,6 +597,152 @@ impl CpalAudioBackend {
         Ok(stream)
     }
 
+    fn create_loopback_stream_f32(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        // For Windows WASAPI loopback, we need to use a different approach
+        // This is a simplified implementation that should work for most cases
+        // including Realtek digital output capture
+
+        // For proper loopback capture, we need to use input stream on loopback devices
+        // This is a limitation of the current approach - true loopback capture
+        // requires platform-specific APIs (like WASAPI loopback on Windows)
+        let stream = device.build_input_stream(
+            &StreamConfig {
+                channels: config.channels,
+                sample_rate: config.sample_rate,
+                buffer_size: config.buffer_size,
+            },
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                // For loopback devices, capture the input data (which should be system audio)
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = sample;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_loopback_stream_i16(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let max_value = i16::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = sample as f32 / max_value;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_loopback_stream_u16(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                let max_value = u16::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = (sample as f32 / max_value) * 2.0 - 1.0;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_loopback_stream_i32(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                let max_value = i32::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = sample as f32 / max_value;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_loopback_stream_u8(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[u8], _: &cpal::InputCallbackInfo| {
+                let max_value = u8::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = (sample as f32 / max_value) * 2.0 - 1.0;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
     /// Try to create a backend with alternative hosts if the default one doesn't find devices
     /// Check if a device is a loopback device (output device used for input capture)
     fn is_loopback_device(&self, device: &Device, original_index: usize) -> bool {
@@ -485,6 +757,143 @@ impl CpalAudioBackend {
         };
 
         original_index >= original_input_count
+    }
+
+    fn create_shared_loopback_stream_f32(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        // For Windows WASAPI shared mode loopback, we need to use input stream
+        // but with the output device configuration
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                // Process the loopback audio data
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = sample;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Shared loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_shared_loopback_stream_i16(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let max_value = i16::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = sample as f32 / max_value;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Shared loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_shared_loopback_stream_u16(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                let max_value = u16::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = (sample as f32 / max_value) * 2.0 - 1.0;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Shared loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_shared_loopback_stream_i32(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                let max_value = i32::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = sample as f32 / max_value;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Shared loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
+    }
+
+    fn create_shared_loopback_stream_u8(
+        &self,
+        device: &Device,
+        config: &StreamConfig,
+        callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+        channels: usize,
+    ) -> Result<Stream, Box<dyn std::error::Error>> {
+        let stream = device.build_input_stream(
+            config,
+            move |data: &[u8], _: &cpal::InputCallbackInfo| {
+                let max_value = u8::MAX as f32;
+                let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                for (i, &sample) in data.iter().enumerate() {
+                    let channel = i % channels;
+                    let frame_idx = i / channels;
+                    if frame_idx < channel_data[channel].len() {
+                        channel_data[channel][frame_idx] = (sample as f32 / max_value) * 2.0 - 1.0;
+                    }
+                }
+                callback.lock().unwrap()(channel_data);
+            },
+            |err| eprintln!("Shared loopback stream error: {}", err),
+            None,
+        )?;
+        Ok(stream)
     }
 
     pub fn new_with_fallback() -> Self {
