@@ -58,3 +58,8 @@ pub fn db_scale_magnitudes(magnitudes: &mut [f32]) {
     magnitudes.iter_mut().for_each(|m| *m = 20.0 * (*m).log10());
 }
 
+/// Calculate the bin index that contains the frequency.
+/// Rounds down.
+pub fn bin_of_frequency(frequency: f32, rate: usize, fft_size: usize) -> usize {
+    (frequency * fft_size as f32 / rate as f32).round() as usize
+}

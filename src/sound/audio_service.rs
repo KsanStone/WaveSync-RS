@@ -188,6 +188,17 @@ impl Inner {
         let latest_fft = &self.latest_fft.lock().unwrap()[channel.get_index()];
         latest_fft.clone()
     }
+    
+    pub fn get_fft_size(&self) -> usize {
+        self.fft_plan.lock().unwrap().len()
+    }
+    
+    pub fn set_fft_size(&self, size: usize) {
+        if size == self.fft_plan.lock().unwrap().len() {
+            return;
+        }
+        self.update_fft_plan(size);
+    }
 
     pub fn get_samples_written(&self) -> u64 {
         self.samples_written.load(Ordering::Acquire)

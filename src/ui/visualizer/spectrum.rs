@@ -12,6 +12,7 @@ use log::{info, warn};
 use std::sync::{Arc, Mutex};
 
 pub const MAX_BARS: u64 = 4096;
+pub const MIN_BAR_WIDTH: f32 = 2.0;
 
 deref_arc!(SpectrumVisualizer);
 
@@ -171,25 +172,53 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             let fft_output_size = fft_data.len();
             let fft_size = fft_output_size * 2;
             let skip = current_source.calculate_buffer_beginning_skip_for(plot_data.x_axis.min, fft_size).saturating_sub(1);
-            let bars_to_draw = fft_output_size - skip;
+            let displayed_bins = current_source.bin_of_frequency(plot_data.x_axis.max, fft_size).min(fft_output_size);
+            let bars_to_draw = displayed_bins - skip;
             let mut vertex_array = Vec::with_capacity(bars_to_draw * 2 * 3);
-            let mut position_array = vec![0.0; fft_output_size + 1];
+            let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1];
 
             for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
-                *item = plot_data.x_axis.gl_pos(frequency_of_bin(
-                    i,
-                    current_source.sample_rate as usize,
-                    fft_size,
-                ));
+                let bin_freq = frequency_of_bin(i, current_source.sample_rate as usize, fft_size);
+                *item = [plot_data.x_axis.gl_pos(bin_freq), plot_data.x_axis.val_to_pos(bin_freq, info.viewport.min.x, info.viewport.max.x)];
             }
 
-            for (i, sample) in fft_data.into_iter().enumerate().skip(skip) {
-                let y = plot_data.y_axis.gl_pos(sample);
+            let mut last_px_pos: Option<[f32;2]> = None;
+            let mut acc = 0.0;
+            let mut coerced_bins = 0;
+
+            for (i, sample) in fft_data.into_iter().enumerate().skip(skip).take(bars_to_draw) {
+                let [gl_pos, px_pos] = position_array[i];
+                let [gl_next_pos, px_next_pos] = position_array[i + 1];
+                let mut gl_pos = gl_pos;
+                let mut v = sample;
+
+                if (px_pos - px_next_pos).abs() < MIN_BAR_WIDTH {
+                    if let Some([gl_prev_pos, px_prev_pos]) = last_px_pos.as_ref() {
+                        let last_px_pos: f32 = *px_prev_pos;
+                        let last_gl_pos: f32 = *gl_prev_pos;
+                        acc += sample;
+                        coerced_bins += 1;
+
+                        if (px_next_pos - last_px_pos).abs() >= MIN_BAR_WIDTH {
+                            v = acc / coerced_bins as f32;
+                            gl_pos = last_gl_pos;
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        acc = sample;
+                        coerced_bins = 1;
+                        last_px_pos = Some([gl_pos, px_pos]);
+                        continue;
+                    }
+                }
+                last_px_pos = None;
+
                 vertex_array.extend_from_slice(&quad_to_triangles(
-                    position_array[i],
+                    gl_pos,
                     -1.0,
-                    position_array[i + 1],
-                    y,
+                    gl_next_pos,
+                    plot_data.y_axis.gl_pos(v),
                 ));
             }
             queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_array));

@@ -23,9 +23,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Wavesync",
         options,
-        Box::new(|_cc| {
-            Ok(Box::<MyApp>::default())
-        }),
+        Box::new(|_cc| Ok(Box::<MyApp>::default())),
     )
 }
 
@@ -34,6 +32,7 @@ struct MyApp {
     audio_service: sound::audio_service::AudioService,
     waveform_visualizer: WaveformVisualizer,
     spectrum_visualizer: SpectrumVisualizer,
+    settings_shown: bool,
 }
 
 impl Default for MyApp {
@@ -45,6 +44,7 @@ impl Default for MyApp {
             waveform_visualizer: WaveformVisualizer::new(audio_service.clone()),
             spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone()),
             audio_service,
+            settings_shown: false,
         }
     }
 }
@@ -58,14 +58,9 @@ impl eframe::App for MyApp {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    let mut selected = "a";
-                    egui::ComboBox::from_id_salt("asd")
-                        .selected_text(format!("{:?}", selected))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut selected, "a", "First");
-                            ui.selectable_value(&mut selected, "b", "Second");
-                            ui.selectable_value(&mut selected, "c", "Third");
-                        });
+                    if ui.button("Settings").clicked() {
+                        self.settings_shown = true;
+                    }
                 });
             });
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -91,5 +86,29 @@ impl eframe::App for MyApp {
                     });
                 });
         });
+        if self.settings_shown {
+            egui::Window::new("Settings")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Fft size");
+                        let mut selected = self.audio_service.get_fft_size();
+                        egui::ComboBox::from_id_salt("fft_size")
+                            .selected_text(format!("{:?}", selected))
+                            .show_ui(ui, |ui| {
+                                for i in 8 .. 17 {
+                                    let v = 2usize.pow(i);
+                                    ui.selectable_value(&mut selected, v, format!("{:?}", v));
+                                }
+                            });
+                        self.audio_service.set_fft_size(selected);
+                    });
+                    if ui.button("Close").clicked() {
+                        self.settings_shown = false;
+                    }
+                });
+        }
     }
 }

@@ -1,4 +1,4 @@
-use crate::sound::{AudioBackendType, SampleFormat};
+use crate::sound::{bin_of_frequency, frequency_of_bin, AudioBackendType, SampleFormat};
 
 /// Represents a capture source.
 /// Is linked to a specific audio backend.
@@ -47,5 +47,9 @@ impl CaptureSource {
         let factor = self.sample_rate as f32 / fft_size as f32;
         let skip = (frequency / factor).ceil() as usize;
         skip.min(fft_size / 2)
+    }
+    
+    pub fn bin_of_frequency(&self, frequency: f32, fft_size: usize) -> usize {
+        bin_of_frequency(frequency, self.sample_rate as usize, fft_size)
     }
 }
