@@ -5,8 +5,9 @@ use egui_wgpu::CallbackTrait;
 use std::ops::Sub;
 
 const PLOT_DIGITS: usize = 2;
-const X_AXIS_WIDTH: i8 = 15;
+const X_AXIS_WIDTH: i8 = 20;
 const Y_AXIS_WIDTH: i8 = 30;
+const TICK_SIZE: f32 = 4.0;
 
 #[derive(Clone)]
 pub struct PlotData {
@@ -59,6 +60,11 @@ pub struct Axis {
     pub logarithmic: bool,
 }
 
+pub struct AxisTicks {
+    pub major: Vec<f32>,
+    pub minor: Vec<f32>,
+}
+
 impl Axis {
     pub fn linear(min: f32, max: f32) -> Self {
         Self {
@@ -85,33 +91,63 @@ impl Axis {
     }
 
     /// Returns the positions for ticks in axis-space
-    pub fn tick_positions(&self, px_size: f32) -> Vec<f32> {
-        let mut tick_positions = vec![];
+    pub fn tick_positions(&self, px_size: f32) -> AxisTicks {
+        let mut major_ticks = vec![];
+        let mut minor_ticks = vec![];
+        const MINOR_TICK_COUNT: usize = 5;
+
         if !self.logarithmic {
             const LABEL_SPACING_PX: f32 = 60.0;
             let labels = (px_size / LABEL_SPACING_PX + 1.0).max(2.0).floor();
             let step = (self.max - self.min) / (labels - 1.0);
+            let minor_step = step / (MINOR_TICK_COUNT as f32 + 1.0);
 
             let mut pos = self.min;
 
-            for _ in 0..labels as usize {
-                tick_positions.push(pos);
+            for i in 0..labels as usize {
+                major_ticks.push(pos);
+                let mut tmp_pos = pos;
+
+                if i + 1 != labels as usize {
+                    for _ in 0..MINOR_TICK_COUNT {
+                        tmp_pos += minor_step;
+                        minor_ticks.push(tmp_pos);
+                    }
+                }
+
                 pos += step;
             }
         } else {
-            let mut i = self.log_lower_bound();
-
-            println!("log lower bound: {} {}", i, 10.0f32.powf(i));
+            let mut i = 0.0;
 
             while i <= self.log_upper_bound() {
                 for j in 1 ..= 9 {
                     let v = j as f32 * 10.0f32.powf(i);
-                    tick_positions.push(v);
+                    if (v >= self.min) && (v <= self.max) {
+                        major_ticks.push(v);
+                    }
                 }
                 i += 1.0
             }
+
+            i = 0.0;
+            while i <= self.log_upper_bound() {
+                let mut j = 0.0;
+                while j <= 9.0 {
+                    let value = j * 10.0f32.powf(i);
+                    if (value >= self.min) && (value <= self.max) {
+                        minor_ticks.push(value);
+                    }
+                    j += 1.0 / MINOR_TICK_COUNT as f32
+                }
+                i += 1.0
+            }
+
+            if (major_ticks[0] - self.min).abs() > 0.001 {
+                major_ticks.insert(0, self.min);
+            }
         }
-        tick_positions
+        AxisTicks { major: major_ticks, minor: minor_ticks }
     }
 
     /// Maps a value in axis-space to a pixel position
@@ -178,7 +214,8 @@ impl<'a> Plot<'a> {
         });
 
         if self.plot_data.x_axis_shown {
-            for pos in self.plot_data.x_axis.tick_positions(content_rect.width()) {
+            let ticks = self.plot_data.x_axis.tick_positions(content_rect.width());
+            for pos in ticks.major {
                 let px_pos =
                     self.plot_data
                         .x_axis
@@ -186,7 +223,7 @@ impl<'a> Plot<'a> {
                 painter.line_segment(
                     [
                         Pos2::new(px_pos, content_rect.min.y),
-                        Pos2::new(px_pos, content_rect.max.y),
+                        Pos2::new(px_pos, content_rect.max.y + TICK_SIZE * 2.0),
                     ],
                     (1.0, self.grid_color),
                 );
@@ -198,17 +235,31 @@ impl<'a> Plot<'a> {
                     self.label_color,
                 );
             }
+            for pos in ticks.minor {
+                let px_pos =
+                    self.plot_data
+                        .x_axis
+                        .val_to_pos(pos, content_rect.min.x, content_rect.max.x);
+                painter.line_segment(
+                    [
+                        Pos2::new(px_pos, content_rect.max.y),
+                        Pos2::new(px_pos, content_rect.max.y + TICK_SIZE),
+                    ],
+                    (1.0, self.grid_color),
+                );
+            }
         }
 
         if self.plot_data.y_axis_shown {
-            for pos in self.plot_data.y_axis.tick_positions(content_rect.height()) {
+            let ticks = self.plot_data.y_axis.tick_positions(content_rect.height());
+            for pos in ticks.major {
                 let px_pos =
                     self.plot_data
                         .y_axis
                         .val_to_pos(pos, content_rect.max.y, content_rect.min.y);
                 painter.line_segment(
                     [
-                        Pos2::new(content_rect.min.x, px_pos),
+                        Pos2::new(content_rect.min.x - TICK_SIZE * 2.0, px_pos),
                         Pos2::new(content_rect.max.x, px_pos),
                     ],
                     (1.0, self.grid_color),
@@ -219,6 +270,19 @@ impl<'a> Plot<'a> {
                     label_format(pos, PLOT_DIGITS),
                     FontId::new(10.0, FontFamily::Monospace),
                     self.label_color,
+                );
+            }
+            for pos in ticks.minor {
+                let px_pos =
+                    self.plot_data
+                        .y_axis
+                        .val_to_pos(pos, content_rect.max.y, content_rect.min.y);
+                painter.line_segment(
+                    [
+                        Pos2::new(content_rect.min.x, px_pos),
+                        Pos2::new(content_rect.min.x - TICK_SIZE, px_pos),
+                    ],
+                    (1.0, self.grid_color),
                 );
             }
         }

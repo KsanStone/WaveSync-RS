@@ -63,12 +63,12 @@ impl AudioBackend for DummyAudioBackend {
         let callback_weak = Arc::downgrade(self.capture_callback.as_ref().unwrap());
         let sequence_index = self.sequence_index.clone();
         thread::spawn(move || {
-            const FREQS: [f32; 4] = [8000.0, 2333.0, 16000.0, 100.0];
-            const PHASES: [f32; 4] = [0.0, 0.25, 0.5, 0.1];
+            const FREQS: [f32; 5] = [8000.0, 23.0, 10.0, 100.0, 20.0];
+            const PHASES: [f32; 5] = [0.0, 0.25, 0.5, 0.1, 0.4];
             const SCALAR: f32 = 1.0 / FREQS.len() as f32;
             loop {
                 if let Some(callback) = callback_weak.upgrade() {
-                    let mut frame = vec![0.0; 100];
+                    let mut frame = vec![0.0; 960];
                     for item in &mut frame {
                         let seq = sequence_index.fetch_add(1, Ordering::Relaxed) as f32;
                         for i in 0..FREQS.len() {
@@ -83,7 +83,7 @@ impl AudioBackend for DummyAudioBackend {
                 } else {
                     break;
                 }
-                thread::sleep(std::time::Duration::from_millis(8));
+                thread::sleep(std::time::Duration::from_millis(20));
             }
         });
     }

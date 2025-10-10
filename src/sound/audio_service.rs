@@ -1,12 +1,12 @@
 use crate::sound::AudioChannel;
 use crate::sound::capture_source::CaptureSource;
-use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use circular_buffer::CircularBuffer;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use crate::sound::dummy_audio_backend::DummyAudioBackend;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 
 const CHANNELS: usize = 3;
@@ -25,13 +25,13 @@ impl AudioService {
     pub fn new() -> Self {
         let mut planner = FftPlanner::new();
         AudioService(Arc::new(Inner {
-            audio_backend: Mutex::new(Box::new(CpalAudioBackend::new_with_fallback())),
+            audio_backend: Mutex::new(Box::new(DummyAudioBackend::new())),
             audio_buffer: Mutex::new([CircularBuffer::boxed(), CircularBuffer::boxed(), CircularBuffer::boxed()]),
             latest_fft: Mutex::new([vec![], vec![], vec![]]),
             samples_written: Default::default(),
             last_fft_idx: Default::default(),
             current_capture_source: Mutex::new(None),
-            fft_plan: Mutex::new(planner.plan_fft_forward(4096)),
+            fft_plan: Mutex::new(planner.plan_fft_forward(256)),
             planner: Mutex::new(planner),
             fft_window: Mutex::new(FftWindow::new(WindowMethod::Hamming)),
         }))
@@ -85,7 +85,7 @@ impl AudioService {
 
 pub struct Inner {
     audio_backend: Mutex<Box<dyn crate::sound::audio_backend::AudioBackend>>,
-    audio_buffer: Mutex<[Box<CircularBuffer<48000, f32>>; CHANNELS]>,
+    audio_buffer: Mutex<[Box<CircularBuffer<96000, f32>>; CHANNELS]>,
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
     samples_written: AtomicU64,
     last_fft_idx: AtomicU64,
@@ -177,14 +177,20 @@ impl Inner {
         }
     }
 
-    pub fn get_samples(&self, channel: AudioChannel, count: usize) -> Vec<f32> {
+    pub fn get_samples_aligned(&self, channel: AudioChannel, count: usize, drop: usize, take: usize) -> Vec<f32> {
         let buffer = &self.audio_buffer.lock().unwrap()[channel.get_index()];
-        buffer.range(..count.min(buffer.len())).copied().collect()
+        let start_idx = buffer.len().saturating_sub(count).saturating_add(drop);
+        let end_idx = start_idx.saturating_add(take).min(buffer.len());
+        buffer.range(start_idx..end_idx).copied().collect()
     }
 
     pub fn get_fft(&self, channel: AudioChannel) -> Vec<f32> {
         let latest_fft = &self.latest_fft.lock().unwrap()[channel.get_index()];
         latest_fft.clone()
+    }
+
+    pub fn get_samples_written(&self) -> u64 {
+        self.samples_written.load(Ordering::Acquire)
     }
 
     pub fn get_source(&self) -> CaptureSource {

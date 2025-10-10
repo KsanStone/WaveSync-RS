@@ -15,3 +15,8 @@ cpal = "0.16.0"
 circular-buffer = "1.2.0"
 rustfft = "6.4.1"
 log = "0.4.28"
+
+[profile.dev.package.rustfft]
+opt-level = 3
+codegen-units = 1
+debug = false

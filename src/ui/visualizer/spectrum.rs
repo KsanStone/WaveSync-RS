@@ -18,6 +18,17 @@ deref_arc!(SpectrumVisualizer);
 pub struct Inner {
     audio_service: AudioService,
     plot_data: Mutex<PlotData>,
+    settings: Mutex<SpectrumVisualizerSettings>
+}
+
+pub struct SpectrumVisualizerSettings {
+    pub channel: AudioChannel,
+    pub draw_type: SpectrumVisualizerType,
+}
+
+pub enum SpectrumVisualizerType {
+    Bar,
+    Line
 }
 
 impl SpectrumVisualizer {
@@ -28,6 +39,10 @@ impl SpectrumVisualizer {
                 Axis::logarithmic(12.0, 20000.0),
                 Axis::linear(-90.0, 0.0),
             )),
+            settings: Mutex::new(SpectrumVisualizerSettings {
+                channel: AudioChannel::Master,
+                draw_type: SpectrumVisualizerType::Bar
+            }),
         }))
     }
 }

@@ -131,7 +131,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
 
     fn paint(
         &self,
-        _info: PaintCallbackInfo,
+        info: PaintCallbackInfo,
         pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
@@ -145,10 +145,13 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 let to_read = 48000;
                 let to_read = floor_to_nearest(to_read, points as usize);
 
+                // let wave_size = to_read as f64 / info.viewport.width() as f64;
+                // let drop = (wave_size - self.visualizer.audio_service.get_samples_written() as f64 % wave_size) as usize;
+
                 let latest_samples = self
                     .visualizer
                     .audio_service
-                    .get_samples(AudioChannel::Master, to_read);
+                    .get_samples_aligned(AudioChannel::Master, to_read, 0, to_read);
                 let step = (latest_samples.len() / points as usize).max(1);
 
 
