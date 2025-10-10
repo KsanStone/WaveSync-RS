@@ -7,9 +7,11 @@ use crate::ui::plot::{Plot, PlotData};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
 use crate::ui::visualizer::visualizer_trait::Visualizer;
 use crate::ui::visualizer::waveform::{WaveformVisualizer, WaveformVisualizerCallback};
-use eframe::egui;
+use eframe::{egui, wgpu};
 use egui_extras::{Size, StripBuilder};
 use std::env;
+use std::time::Instant;
+use log::info;
 
 fn main() -> eframe::Result {
     if env::var("RUST_LOG").is_err() {
@@ -20,23 +22,43 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
         ..Default::default()
     };
+
     eframe::run_native(
         "Wavesync",
         options,
-        Box::new(|_cc| Ok(Box::<MyApp>::default())),
+        Box::new(|cc| {
+            let device = &cc.wgpu_render_state.as_ref().unwrap().device;
+            if device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+                // create query set & buffer
+                let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("timestamp_queries"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: 2,
+                });
+                let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("timestamp_resolve_buffer"),
+                    size: 16, // enough for 2 timestamps
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                info!("Time Queries available")
+            }
+            Ok(Box::new(WaveSync::new()))
+        }),
     )
 }
 
-struct MyApp {
+struct WaveSync {
     segments: u32,
     audio_service: sound::audio_service::AudioService,
     waveform_visualizer: WaveformVisualizer,
     spectrum_visualizer: SpectrumVisualizer,
     settings_shown: bool,
+    last_update: Instant
 }
 
-impl Default for MyApp {
-    fn default() -> Self {
+impl WaveSync {
+    fn new() -> Self {
         let audio_service = sound::audio_service::AudioService::new();
         audio_service.init();
         Self {
@@ -45,12 +67,15 @@ impl Default for MyApp {
             spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone()),
             audio_service,
             settings_shown: false,
+            last_update: Instant::now()
         }
     }
 }
 
-impl eframe::App for MyApp {
+impl eframe::App for WaveSync {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        info!("Since last frame {:?}", self.last_update.elapsed());
+        self.last_update = Instant::now();
         catppuccin_egui::set_theme(ctx, catppuccin_egui::MOCHA);
         ctx.request_repaint();
         let mut waveform_plot_data = PlotData::default();

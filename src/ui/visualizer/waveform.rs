@@ -9,6 +9,7 @@ use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
 use std::mem::size_of;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const MAX_LINE_SEGMENTS: usize = 512;
 
@@ -136,6 +137,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
         resources: &CallbackResources,
     ) {
         if let Some(pipeline) = resources.get::<WaveformPipeline>() {
+            let start = Instant::now();
             let queue = resources.get::<wgpu::Queue>().unwrap();
             let mut locked_buffer = resources.get::<WaveformVertexBuffer>();
             if let Some(buffer) = locked_buffer.as_mut() {
@@ -171,6 +173,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.set_pipeline(pipeline);
                 pass.draw(0..vertices, 0..vertices.saturating_sub(1));
+                info!("Waveform painting took {:?}", start.elapsed());
             }
         }
     }

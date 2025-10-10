@@ -6,6 +6,8 @@ use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use log::info;
 use crate::sound::dummy_audio_backend::DummyAudioBackend;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 
@@ -102,6 +104,7 @@ impl Inner {
     }
 
     pub fn handle_samples(&self, samples: Vec<Vec<f32>>) {
+        let start = Instant::now();
         let mut buffer = self.audio_buffer.lock().unwrap();
         let fft_channels = if samples.len() == 1 {
             // Mono audio, no need to mix channels
@@ -127,6 +130,7 @@ impl Inner {
         self.samples_written
             .fetch_add(samples[0].len() as u64, Ordering::Release);
         self.do_fft(fft_channels);
+        info!("Audio handling took {:?}", start.elapsed());
     }
 
     fn do_fft(&self, channels: usize) {

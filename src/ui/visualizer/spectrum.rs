@@ -10,6 +10,7 @@ use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::{info, warn};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub const MAX_BARS: u64 = 4096;
 pub const MIN_BAR_WIDTH: f32 = 2.0;
@@ -157,6 +158,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         callback_resources: &CallbackResources,
     ) {
         if let Some(pipeline) = callback_resources.get::<SpectrumPipeline>() {
+            let start = Instant::now();
             let plot_data = self.visualizer.plot_data.lock().unwrap();
             let vertex_buffer = callback_resources.get::<SpectrumVertexBuffer>().unwrap();
             let queue = callback_resources.get::<Queue>().unwrap();
@@ -175,7 +177,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             let displayed_bins = current_source.bin_of_frequency(plot_data.x_axis.max, fft_size).min(fft_output_size);
             let bars_to_draw = displayed_bins - skip;
             let mut vertex_array = Vec::with_capacity(bars_to_draw * 2 * 3);
-            let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1];
+            let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1 + skip];
 
             for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
                 let bin_freq = frequency_of_bin(i, current_source.sample_rate as usize, fft_size);
@@ -186,6 +188,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             let mut acc = 0.0;
             let mut coerced_bins = 0;
 
+            let mut bars_drawn = 0;
             for (i, sample) in fft_data.into_iter().enumerate().skip(skip).take(bars_to_draw) {
                 let [gl_pos, px_pos] = position_array[i];
                 let [gl_next_pos, px_next_pos] = position_array[i + 1];
@@ -220,11 +223,13 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                     gl_next_pos,
                     plot_data.y_axis.gl_pos(v),
                 ));
+                bars_drawn += 1;
             }
             queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_array));
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             render_pass.set_pipeline(pipeline);
-            render_pass.draw(0..(bars_to_draw * 2 * 3) as u32, 0..(bars_to_draw * 2) as u32);
+            render_pass.draw(0..(bars_drawn * 2 * 3) as u32, 0..(bars_drawn * 2) as u32);
+            info!("Painting spectrum took {:?} instances: {bars_drawn}", start.elapsed());
         }
     }
 }
