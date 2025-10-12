@@ -28,5 +28,4 @@ pub trait AudioBackend: Send + Sync + Any {
     fn stop_capture(&mut self);
 
     fn as_any(&self) -> &dyn Any;
-    
 }

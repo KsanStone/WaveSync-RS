@@ -1,9 +1,9 @@
-use std::any::Any;
 use crate::sound::capture_source::CaptureSource;
-use crate::sound::dummy_audio_backend::DummyAudioBackend;
+use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
 use circular_buffer::CircularBuffer;
+use log::info;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use std::ops::Deref;
@@ -27,7 +27,7 @@ impl AudioService {
         let mut planner = FftPlanner::new();
 
         AudioService(Arc::new(Inner {
-            audio_backend: Mutex::new(Box::new(DummyAudioBackend::new())),
+            audio_backend: Mutex::new(Box::new(CpalAudioBackend::new_with_fallback())),
             audio_buffer: Mutex::new(std::array::from_fn(|_| CircularBuffer::boxed())),
             latest_fft: Mutex::new(std::array::from_fn(|_| vec![])),
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),
@@ -45,12 +45,12 @@ impl AudioService {
 
         // Print detected audio devices
         let devices = backend.detect_supported_capture_sources();
-        println!("🎵 Detected Audio Devices:");
+        info!("🎵 Detected Audio Devices:");
         if devices.is_empty() {
-            println!("   ❌ No audio input devices found!");
+            info!("   ❌ No audio input devices found!");
         } else {
             for (i, device) in devices.iter().enumerate() {
-                println!(
+                info!(
                     "   {}. {} ({}ch, {}Hz, {:?})",
                     i + 1,
                     device.name,
@@ -63,9 +63,9 @@ impl AudioService {
 
         // Print audio systems
         let systems = backend.detect_supported_audio_systems();
-        println!("\n🔊 Audio Systems:");
+        info!("\n🔊 Audio Systems:");
         for system in &systems {
-            println!("   {}", system.name);
+            info!("   {}", system.name);
         }
 
         let weak_inner = Arc::downgrade(&self.0);
@@ -77,7 +77,7 @@ impl AudioService {
         }));
 
         let source = backend.find_default_capture_source();
-        println!(
+        info!(
             "\n▶️  Starting capture from: {} (ID: {})",
             source.name, source.id
         );
@@ -88,7 +88,7 @@ impl AudioService {
 
 pub struct Inner {
     pub audio_backend: Mutex<Box<dyn crate::sound::audio_backend::AudioBackend>>,
-    audio_buffer: Mutex<[Box<CircularBuffer<96000, f32>>; CHANNELS]>,
+    audio_buffer: Mutex<[Box<CircularBuffer<384000, f32>>; CHANNELS]>,
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
     samples_written: AtomicU64,
@@ -134,7 +134,7 @@ impl Inner {
     }
 
     fn do_fft(&self, channels: usize) {
-        let fft_sample_offset = 1000;
+        let fft_sample_offset = 3200;
         let samples_written = self.samples_written.load(Ordering::Acquire);
         let mut last_fft_idx = self.last_fft_idx.load(Ordering::Acquire);
         let mut latest_fft = self.latest_fft.lock().unwrap();

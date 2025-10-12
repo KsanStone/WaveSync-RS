@@ -27,14 +27,17 @@ pub struct Inner {
 pub struct WaveformSettings {
     pub channel: AudioChannel,
     pub align_to_peak: bool,
-    pub duration: Duration
+    pub duration: Duration,
 }
 
 impl WaveformVisualizer {
     pub fn new(audio_service: AudioService) -> Self {
         Self(Arc::new(Inner {
             audio_service,
-            plot_data: Mutex::new(PlotData::from_axis(Axis::linear(0.0, 1.0), Axis::linear(-1.0, 1.0)).x_axis_shown(false)),
+            plot_data: Mutex::new(
+                PlotData::from_axis(Axis::linear(0.0, 1.0), Axis::linear(-1.0, 1.0))
+                    .x_axis_shown(false),
+            ),
             settings: Mutex::new(WaveformSettings {
                 channel: AudioChannel::Master,
                 align_to_peak: true,
@@ -163,26 +166,40 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 let half_buffer_size = (nums / 4) as u32; // 2 floats per vertex
                 let buffer_size = half_buffer_size * 2;
 
-
-                let to_read = (settings.duration.as_secs_f32() * source.sample_rate as f32) as usize;
+                let to_read =
+                    (settings.duration.as_secs_f32() * source.sample_rate as f32) as usize;
                 let to_read = floor_to_nearest(to_read, half_buffer_size as usize);
 
                 let mut drop = 0;
                 let mut take = to_read;
                 let peak = audio_service.get_fft_peak(settings.channel);
+
                 if settings.align_to_peak
                     && let Some(peak) = peak
                 {
-                    let to_read = to_read as u64;
-                    let max_waves = (info.viewport.width() as u64 / PIXELS_PER_WAVE).clamp(1, 50);
-                    let wave_size = source.wave_length(peak.interpolated_frequency.floor()) as f64;
-                    drop = (wave_size - audio_service.get_samples_written() as f64 % wave_size)
-                        .max(0.0)
-                        .min((to_read - MIN_DISPLAYED_SAMPLES) as f64) as u64;
-                    take = (to_read - wave_size as u64)
-                        .max(1)
-                        .min(wave_size as u64 * max_waves)
-                        .min(to_read - drop) as usize;
+                    let align_low_pass =
+                        (1.2f32 / (to_read as f32 / source.sample_rate as f32)).max(1.0);
+                    let should_do_alignement = peak.value > 0.0001
+                        && peak.interpolated_frequency <= 20000.0
+                        && peak.interpolated_frequency >= align_low_pass;
+
+                    if should_do_alignement {
+                        let to_read = to_read as u64;
+                        let max_waves =
+                            (info.viewport.width() as u64 / PIXELS_PER_WAVE).clamp(1, 50);
+                        let wave_size =
+                            source.wave_length(peak.interpolated_frequency.floor()) as f64;
+
+                        drop = (wave_size - audio_service.get_samples_written() as f64 % wave_size)
+                            .max(0.0)
+                            .min((to_read - MIN_DISPLAYED_SAMPLES) as f64)
+                            as u64;
+                        take = to_read
+                            .saturating_sub(wave_size as u64)
+                            .max(1)
+                            .min(wave_size as u64 * max_waves)
+                            .min(to_read - drop) as usize;
+                    }
                 }
 
                 let latest_samples = audio_service.get_samples_aligned(
@@ -193,14 +210,18 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 );
                 let step = (latest_samples.len() / half_buffer_size as usize).max(1);
 
-                let mut vertices = vec![[0.0, 0.0]; (buffer_size as usize).min(latest_samples.len())];
+                let mut vertices =
+                    vec![[0.0, 0.0]; (buffer_size as usize).min(latest_samples.len())];
                 let mut vertices_written = 0;
                 for (i, sample) in latest_samples.iter().enumerate().step_by(step) {
                     let vertex_index = i / step;
                     if vertex_index >= buffer_size as usize {
                         break;
                     }
-                    vertices[vertex_index] = [i as f32 / latest_samples.len() as f32 * 2.0 - 1.0, *sample];
+                    vertices[vertex_index] = [
+                        i as f32 / latest_samples.len() as f32 * 2.0 - 1.0,
+                        0.0 - *sample,
+                    ];
                     vertices_written += 1;
                 }
 

@@ -3,19 +3,17 @@
 mod sound;
 mod ui;
 
-use std::any::Any;
 use crate::ui::plot::Plot;
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
 use crate::ui::visualizer::visualizer_trait::Visualizer;
 use crate::ui::visualizer::waveform::{WaveformVisualizer, WaveformVisualizerCallback};
+use eframe::egui::Widget;
 use eframe::{egui, wgpu};
 use egui_extras::{Size, StripBuilder};
 use log::info;
 use std::env;
 use std::ops::RangeInclusive;
-use std::sync::MutexGuard;
 use std::time::Instant;
-use eframe::egui::Widget;
 
 fn main() -> eframe::Result {
     if env::var("RUST_LOG").is_err() {
@@ -95,9 +93,17 @@ impl eframe::App for WaveSync {
                         ui.separator();
                     }
                     let audio_backend = self.audio_service.audio_backend.lock().unwrap();
-                    if let Some(dummy_backend) = audio_backend.as_any().downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>() {
-                        let mut sequencer_frequency = dummy_backend.sequencer_frequency.lock().unwrap();
-                        egui::Slider::new(&mut *sequencer_frequency, RangeInclusive::from(egui::Rangef::new(20.0, 1000.0))).ui(ui);
+                    if let Some(dummy_backend) = audio_backend
+                        .as_any()
+                        .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>(
+                    ) {
+                        let mut sequencer_frequency =
+                            dummy_backend.sequencer_frequency.lock().unwrap();
+                        egui::Slider::new(
+                            &mut *sequencer_frequency,
+                            RangeInclusive::from(egui::Rangef::new(20.0, 1000.0)),
+                        )
+                        .ui(ui);
                     }
                 });
             });

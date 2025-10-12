@@ -51,6 +51,7 @@ impl AudioChannel {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub enum SampleFormat {
     U8,
     I16,

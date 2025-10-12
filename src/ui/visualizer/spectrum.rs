@@ -8,7 +8,7 @@ use eframe::egui::PaintCallbackInfo;
 use eframe::wgpu;
 use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use log::{info, warn};
+use log::info;
 use std::sync::{Arc, Mutex};
 
 pub const MAX_BARS: u64 = 4096;

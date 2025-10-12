@@ -67,15 +67,14 @@ impl AudioBackend for DummyAudioBackend {
         let sequencer_frequency = self.sequencer_frequency.clone();
         thread::spawn(move || {
             loop {
-                let sequencer_frequency = {
-                    *sequencer_frequency.lock().unwrap()
-                };
+                let sequencer_frequency = { *sequencer_frequency.lock().unwrap() };
                 let frequencies = vec![sequencer_frequency];
                 let scalar: f32 = 1.0 / frequencies.len() as f32;
                 if let Some(callback) = callback_weak.upgrade() {
                     let mut frame = vec![0.0; 960];
                     for item in &mut frame {
-                        let seq = (sequence_index.fetch_add(1, Ordering::Relaxed) as f32 % (100000.0 * 2.0 * std::f32::consts::PI));
+                        let seq = sequence_index.fetch_add(1, Ordering::Relaxed) as f32
+                            % (100000.0 * 2.0 * std::f32::consts::PI);
                         for freq in &frequencies {
                             let wave_length = 48000.0 / freq;
 
