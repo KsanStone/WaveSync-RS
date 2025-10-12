@@ -3,15 +3,19 @@
 mod sound;
 mod ui;
 
-use crate::ui::plot::{Plot, PlotData};
+use std::any::Any;
+use crate::ui::plot::Plot;
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
 use crate::ui::visualizer::visualizer_trait::Visualizer;
 use crate::ui::visualizer::waveform::{WaveformVisualizer, WaveformVisualizerCallback};
 use eframe::{egui, wgpu};
 use egui_extras::{Size, StripBuilder};
-use std::env;
-use std::time::Instant;
 use log::info;
+use std::env;
+use std::ops::RangeInclusive;
+use std::sync::MutexGuard;
+use std::time::Instant;
+use eframe::egui::Widget;
 
 fn main() -> eframe::Result {
     if env::var("RUST_LOG").is_err() {
@@ -54,7 +58,7 @@ struct WaveSync {
     waveform_visualizer: WaveformVisualizer,
     spectrum_visualizer: SpectrumVisualizer,
     settings_shown: bool,
-    last_update: Instant
+    last_update: Instant,
 }
 
 impl WaveSync {
@@ -67,24 +71,33 @@ impl WaveSync {
             spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone()),
             audio_service,
             settings_shown: false,
-            last_update: Instant::now()
+            last_update: Instant::now(),
         }
     }
 }
 
 impl eframe::App for WaveSync {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        info!("Since last frame {:?}", self.last_update.elapsed());
         self.last_update = Instant::now();
         catppuccin_egui::set_theme(ctx, catppuccin_egui::MOCHA);
         ctx.request_repaint();
-        let mut waveform_plot_data = PlotData::default();
+
         egui::TopBottomPanel::bottom("bottom_bar")
             .resizable(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Settings").clicked() {
                         self.settings_shown = true;
+                    }
+                    ui.separator();
+                    for peak in self.audio_service.get_peak_labels() {
+                        ui.label(peak);
+                        ui.separator();
+                    }
+                    let audio_backend = self.audio_service.audio_backend.lock().unwrap();
+                    if let Some(dummy_backend) = audio_backend.as_any().downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>() {
+                        let mut sequencer_frequency = dummy_backend.sequencer_frequency.lock().unwrap();
+                        egui::Slider::new(&mut *sequencer_frequency, RangeInclusive::from(egui::Rangef::new(20.0, 1000.0))).ui(ui);
                     }
                 });
             });
@@ -93,9 +106,8 @@ impl eframe::App for WaveSync {
                 .sizes(Size::remainder(), 2)
                 .vertical(|mut strip| {
                     strip.cell(|ui| {
-                        self.waveform_visualizer
-                            .update_axis(&mut waveform_plot_data);
-                        let plot = Plot::new(&mut waveform_plot_data);
+                        let mut plot_data = self.waveform_visualizer.get_plot_data();
+                        let plot = Plot::new(&mut plot_data);
                         plot.show(
                             ui,
                             WaveformVisualizerCallback::new(self.waveform_visualizer.clone()),
@@ -123,7 +135,7 @@ impl eframe::App for WaveSync {
                         egui::ComboBox::from_id_salt("fft_size")
                             .selected_text(format!("{:?}", selected))
                             .show_ui(ui, |ui| {
-                                for i in 8 .. 17 {
+                                for i in 8..17 {
                                     let v = 2usize.pow(i);
                                     ui.selectable_value(&mut selected, v, format!("{:?}", v));
                                 }

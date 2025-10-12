@@ -12,10 +12,8 @@ const TICK_SIZE: f32 = 4.0;
 #[derive(Clone)]
 pub struct PlotData {
     pub x_axis: Axis,
-    pub x_axis_grid: bool,
     pub x_axis_shown: bool,
     pub y_axis: Axis,
-    pub y_axis_grid: bool,
     pub y_axis_shown: bool,
 }
 
@@ -27,14 +25,12 @@ impl Default for PlotData {
                 max: 100.0,
                 logarithmic: false,
             },
-            x_axis_grid: true,
             x_axis_shown: true,
             y_axis: Axis {
                 min: 0.0,
                 max: 100.0,
                 logarithmic: false,
             },
-            y_axis_grid: true,
             y_axis_shown: true,
         }
     }
@@ -44,12 +40,22 @@ impl PlotData {
     pub fn from_axis(x_axis: Axis, y_axis: Axis) -> Self {
         Self {
             x_axis,
-            x_axis_grid: true,
             x_axis_shown: true,
             y_axis,
-            y_axis_grid: true,
             y_axis_shown: true,
         }
+    }
+
+    #[allow(unused)]
+    pub fn x_axis_shown(mut self, x_axis_shown: bool) -> Self {
+        self.x_axis_shown = x_axis_shown;
+        self
+    }
+
+    #[allow(unused)]
+    pub fn y_axis_shown(mut self, y_axis_shown: bool) -> Self {
+        self.y_axis_shown = y_axis_shown;
+        self
     }
 }
 
@@ -121,7 +127,7 @@ impl Axis {
             let mut i = 0.0;
 
             while i <= self.log_upper_bound() {
-                for j in 1 ..= 9 {
+                for j in 1..=9 {
                     let v = j as f32 * 10.0f32.powf(i);
                     if (v >= self.min) && (v <= self.max) {
                         major_ticks.push(v);
@@ -147,7 +153,10 @@ impl Axis {
                 major_ticks.insert(0, self.min);
             }
         }
-        AxisTicks { major: major_ticks, minor: minor_ticks }
+        AxisTicks {
+            major: major_ticks,
+            minor: minor_ticks,
+        }
     }
 
     /// Maps a value in axis-space to a pixel position
@@ -169,11 +178,7 @@ impl Axis {
     }
 
     fn log(val: f32) -> f32 {
-        if val <= 0.0 {
-            0.0
-        } else {
-            val.log10()
-        }
+        if val <= 0.0 { 0.0 } else { val.log10() }
     }
 }
 

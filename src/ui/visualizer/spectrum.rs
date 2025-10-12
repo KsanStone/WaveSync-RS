@@ -10,7 +10,6 @@ use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::{info, warn};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 pub const MAX_BARS: u64 = 4096;
 pub const MIN_BAR_WIDTH: f32 = 2.0;
@@ -20,7 +19,7 @@ deref_arc!(SpectrumVisualizer);
 pub struct Inner {
     audio_service: AudioService,
     plot_data: Mutex<PlotData>,
-    settings: Mutex<SpectrumVisualizerSettings>
+    settings: Mutex<SpectrumVisualizerSettings>,
 }
 
 pub struct SpectrumVisualizerSettings {
@@ -30,7 +29,7 @@ pub struct SpectrumVisualizerSettings {
 
 pub enum SpectrumVisualizerType {
     Bar,
-    Line
+    Line,
 }
 
 impl SpectrumVisualizer {
@@ -43,7 +42,7 @@ impl SpectrumVisualizer {
             )),
             settings: Mutex::new(SpectrumVisualizerSettings {
                 channel: AudioChannel::Master,
-                draw_type: SpectrumVisualizerType::Bar
+                draw_type: SpectrumVisualizerType::Bar,
             }),
         }))
     }
@@ -158,7 +157,6 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         callback_resources: &CallbackResources,
     ) {
         if let Some(pipeline) = callback_resources.get::<SpectrumPipeline>() {
-            let start = Instant::now();
             let plot_data = self.visualizer.plot_data.lock().unwrap();
             let vertex_buffer = callback_resources.get::<SpectrumVertexBuffer>().unwrap();
             let queue = callback_resources.get::<Queue>().unwrap();
@@ -166,30 +164,40 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             let mut fft_data = self.visualizer.audio_service.get_fft(AudioChannel::Master);
             db_scale_magnitudes(&mut fft_data);
-            if fft_data.len() > MAX_BARS as usize {
-                warn!("FFT data is too large, skipping painting, TODO: implement");
-                return;
-            }
 
             let fft_output_size = fft_data.len();
             let fft_size = fft_output_size * 2;
-            let skip = current_source.calculate_buffer_beginning_skip_for(plot_data.x_axis.min, fft_size).saturating_sub(1);
-            let displayed_bins = current_source.bin_of_frequency(plot_data.x_axis.max, fft_size).min(fft_output_size);
+            let skip = current_source
+                .calculate_buffer_beginning_skip_for(plot_data.x_axis.min, fft_size)
+                .saturating_sub(1);
+            let displayed_bins = current_source
+                .bin_of_frequency(plot_data.x_axis.max, fft_size)
+                .min(fft_output_size);
             let bars_to_draw = displayed_bins - skip;
             let mut vertex_array = Vec::with_capacity(bars_to_draw * 2 * 3);
             let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1 + skip];
 
             for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
                 let bin_freq = frequency_of_bin(i, current_source.sample_rate as usize, fft_size);
-                *item = [plot_data.x_axis.gl_pos(bin_freq), plot_data.x_axis.val_to_pos(bin_freq, info.viewport.min.x, info.viewport.max.x)];
+                *item = [
+                    plot_data.x_axis.gl_pos(bin_freq),
+                    plot_data
+                        .x_axis
+                        .val_to_pos(bin_freq, info.viewport.min.x, info.viewport.max.x),
+                ];
             }
 
-            let mut last_px_pos: Option<[f32;2]> = None;
+            let mut last_px_pos: Option<[f32; 2]> = None;
             let mut acc = 0.0;
             let mut coerced_bins = 0;
 
             let mut bars_drawn = 0;
-            for (i, sample) in fft_data.into_iter().enumerate().skip(skip).take(bars_to_draw) {
+            for (i, sample) in fft_data
+                .into_iter()
+                .enumerate()
+                .skip(skip)
+                .take(bars_to_draw)
+            {
                 let [gl_pos, px_pos] = position_array[i];
                 let [gl_next_pos, px_next_pos] = position_array[i + 1];
                 let mut gl_pos = gl_pos;
@@ -229,7 +237,6 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
             render_pass.set_pipeline(pipeline);
             render_pass.draw(0..(bars_drawn * 2 * 3) as u32, 0..(bars_drawn * 2) as u32);
-            info!("Painting spectrum took {:?} instances: {bars_drawn}", start.elapsed());
         }
     }
 }

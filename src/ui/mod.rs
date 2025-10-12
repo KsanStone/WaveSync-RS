@@ -1,3 +1,5 @@
+use eframe::wgpu;
+
 pub mod plot;
 pub mod visualizer;
 
@@ -46,3 +48,9 @@ fn quad_to_triangles(x_min: f32, y_min: f32, x_max: f32, y_max: f32) -> [[f32; 2
         [x_min, y_max],
     ]
 }
+
+pub const MSAA_4X: wgpu::MultisampleState = wgpu::MultisampleState {
+    count: 4,
+    mask: !0,
+    alpha_to_coverage_enabled: false,
+};

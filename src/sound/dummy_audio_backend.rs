@@ -12,6 +12,7 @@ pub struct DummyAudioBackend {
     audio_system: AudioSystem,
     capture_source: CaptureSource,
     sequence_index: Arc<AtomicUsize>,
+    pub sequencer_frequency: Arc<Mutex<f32>>,
 }
 
 impl DummyAudioBackend {
@@ -32,6 +33,7 @@ impl DummyAudioBackend {
                 backend: AudioBackendType::Dummy,
             },
             sequence_index: Default::default(),
+            sequencer_frequency: Arc::new(Mutex::new(100.0)),
         }
     }
 }
@@ -62,24 +64,25 @@ impl AudioBackend for DummyAudioBackend {
     fn start_capture(&mut self, _source: CaptureSource) {
         let callback_weak = Arc::downgrade(self.capture_callback.as_ref().unwrap());
         let sequence_index = self.sequence_index.clone();
+        let sequencer_frequency = self.sequencer_frequency.clone();
         thread::spawn(move || {
-            const FREQS: [f32; 5] = [8000.0, 23.0, 10.0, 100.0, 20.0];
-            const PHASES: [f32; 5] = [0.0, 0.25, 0.5, 0.1, 0.4];
-            const SCALAR: f32 = 1.0 / FREQS.len() as f32;
             loop {
+                let sequencer_frequency = {
+                    *sequencer_frequency.lock().unwrap()
+                };
+                let frequencies = vec![sequencer_frequency];
+                let scalar: f32 = 1.0 / frequencies.len() as f32;
                 if let Some(callback) = callback_weak.upgrade() {
                     let mut frame = vec![0.0; 960];
                     for item in &mut frame {
-                        let seq = sequence_index.fetch_add(1, Ordering::Relaxed) as f32;
-                        for i in 0..FREQS.len() {
-                            let div = FREQS[i];
-                            let phase = PHASES[i];
-                            *item += (seq / div + phase)
-                                .sin() * SCALAR
+                        let seq = (sequence_index.fetch_add(1, Ordering::Relaxed) as f32 % (100000.0 * 2.0 * std::f32::consts::PI));
+                        for freq in &frequencies {
+                            let wave_length = 48000.0 / freq;
+
+                            *item += (seq / wave_length * 2.0 * std::f32::consts::PI).sin() * scalar
                         }
                     }
                     callback.lock().unwrap()(vec![frame]);
-
                 } else {
                     break;
                 }
@@ -89,4 +92,8 @@ impl AudioBackend for DummyAudioBackend {
     }
 
     fn stop_capture(&mut self) {}
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }

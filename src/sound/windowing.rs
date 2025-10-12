@@ -1,7 +1,7 @@
 use std::f32::consts::PI;
 
 pub enum WindowMethod {
-    Hamming
+    Hamming,
 }
 
 pub struct FftWindow {
@@ -30,8 +30,9 @@ impl FftWindow {
             match self.window_method {
                 WindowMethod::Hamming => {
                     let size_minus_one = size.saturating_sub(1) as f32;
-                    for i in 0 .. size {
-                        self.window_cache[i] = 0.54 - 0.46 * (PI * 2.0 * i as f32 / size_minus_one).cos()
+                    for i in 0..size {
+                        self.window_cache[i] =
+                            0.54 - 0.46 * (PI * 2.0 * i as f32 / size_minus_one).cos()
                     }
                     self.window_scalar = 1.0 / self.window_cache.iter().sum::<f32>();
                 }
@@ -39,5 +40,4 @@ impl FftWindow {
         }
         (self.window_scalar, &self.window_cache)
     }
-
 }
