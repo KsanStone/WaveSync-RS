@@ -76,7 +76,8 @@ impl AudioService {
             }
         }));
 
-        let source = backend.find_default_capture_source();
+        // let source = backend.find_default_capture_source();
+        let source = devices[0].clone();
         info!(
             "\n▶️  Starting capture from: {} (ID: {})",
             source.name, source.id

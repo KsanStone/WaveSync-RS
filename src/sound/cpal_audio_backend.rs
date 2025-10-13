@@ -7,7 +7,9 @@ use cpal::{Device, Host, Stream, StreamConfig};
 use log::error;
 use std::any::Any;
 use std::sync::atomic::AtomicUsize;
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 pub struct CpalAudioBackend {
     capture_callback: OptionCaptureCallback,
@@ -15,7 +17,7 @@ pub struct CpalAudioBackend {
     capture_source: CaptureSource,
     sequence_index: Arc<AtomicUsize>,
     host: Host,
-    current_stream: Option<Stream>,
+    capture_stop_signal: Option<Sender<()>>,
     /// true if it's a mic/real input, false if it's a loopback device
     input_devices: Vec<(Device, bool)>,
 }
@@ -23,7 +25,6 @@ pub struct CpalAudioBackend {
 macro_rules! impl_stream_methods {
     ($fn_prefix:ident, $sample_type:ty, $convert:expr) => {
         fn $fn_prefix(
-            &self,
             device: &Device,
             config: &StreamConfig,
             callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
@@ -102,7 +103,7 @@ impl CpalAudioBackend {
             },
             sequence_index: Default::default(),
             host,
-            current_stream: None,
+            capture_stop_signal: None,
             input_devices,
         }
     }
@@ -210,7 +211,7 @@ impl AudioBackend for CpalAudioBackend {
     }
 
     fn start_capture(&mut self, source: CaptureSource) {
-        if let Some(stream) = self.current_stream.take() {
+        if let Some(stream) = self.capture_stop_signal.take() {
             drop(stream);
         }
 
@@ -235,9 +236,10 @@ impl AudioBackend for CpalAudioBackend {
         let callback = self.capture_callback.as_ref().unwrap().clone();
 
         // Determine which function to call based on sample format
-        let make_stream = |config: &StreamConfig,
-                           channels: usize|
-         -> Result<Stream, Box<dyn std::error::Error>> {
+        let make_stream = move |device: &Device,
+                                config: &StreamConfig,
+                                channels: usize|
+              -> Result<Stream, Box<dyn std::error::Error>> {
             use cpal::SampleFormat::*;
             let format = if is_loopback {
                 // For Windows shared loopback, use the shared functions
@@ -253,11 +255,11 @@ impl AudioBackend for CpalAudioBackend {
             };
 
             match format {
-                F32 => self.create_stream_f32(&device, config, callback.clone(), channels),
-                I16 => self.create_stream_i16(&device, config, callback.clone(), channels),
-                U16 => self.create_stream_u16(&device, config, callback.clone(), channels),
-                I32 => self.create_stream_i32(&device, config, callback.clone(), channels),
-                U8 => self.create_stream_u8(&device, config, callback.clone(), channels),
+                F32 => Self::create_stream_f32(&device, config, callback.clone(), channels),
+                I16 => Self::create_stream_i16(&device, config, callback.clone(), channels),
+                U16 => Self::create_stream_u16(&device, config, callback.clone(), channels),
+                I32 => Self::create_stream_i32(&device, config, callback.clone(), channels),
+                U8 => Self::create_stream_u8(&device, config, callback.clone(), channels),
 
                 _ => {
                     error!("Unsupported sample format: {:?}", format);
@@ -291,16 +293,23 @@ impl AudioBackend for CpalAudioBackend {
 
         let channels = config.channels as usize;
 
-        match make_stream(&config, channels) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.capture_stop_signal = Some(tx);
+
+        let device = device.clone();
+
+        thread::spawn(move || match make_stream(&device, &config, channels) {
             Ok(stream) => {
-                self.current_stream = Some(stream);
-                if let Err(e) = self.current_stream.as_ref().unwrap().play() {
+                if let Err(e) = stream.play() {
                     error!(
                         "Error starting capture for device '{}': {}",
                         device.name().unwrap_or_else(|_| "Unknown".to_string()),
                         e
                     );
                 }
+
+                let _ = rx.recv();
+                drop(stream);
             }
             Err(_) => {
                 error!(
@@ -308,12 +317,12 @@ impl AudioBackend for CpalAudioBackend {
                     device.name().unwrap_or_else(|_| "Unknown".to_string())
                 );
             }
-        }
+        });
     }
 
     fn stop_capture(&mut self) {
-        if let Some(stream) = self.current_stream.take() {
-            drop(stream);
+        if let Some(sender) = self.capture_stop_signal.take() {
+            sender.send(()).expect("Failed to send the stop signal");
         }
     }
 
