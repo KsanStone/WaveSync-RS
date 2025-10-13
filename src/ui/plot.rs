@@ -197,6 +197,16 @@ impl<'a> Plot<'a> {
         }
     }
 
+    pub fn set_grid_color(mut self, color: Color32) -> Self {
+        self.grid_color = color;
+        self
+    }
+
+    pub fn set_label_color(mut self, color: Color32) -> Self {
+        self.label_color = color;
+        self
+    }
+
     pub fn show(self, ui: &mut Ui) -> Rect {
         let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
 

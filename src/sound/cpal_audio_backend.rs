@@ -147,12 +147,16 @@ impl AudioBackend for CpalAudioBackend {
     }
 
     fn find_default_capture_source(&self) -> CaptureSource {
-        // Find first loopback device if any
         if let Some(source) = self
             .input_devices
             .iter()
             .enumerate()
-            .filter(|(i, d)| self.is_loopback_device(*i))
+            .filter(|(_, d)| {
+                #[cfg(target_os = "macos")]
+                return d.1;
+                #[cfg(not(target_os = "macos"))]
+                return !d.1;
+            })
             .filter_map(|(i, device)| {
                 device
                     .0
@@ -255,11 +259,11 @@ impl AudioBackend for CpalAudioBackend {
             };
 
             match format {
-                F32 => Self::create_stream_f32(&device, config, callback.clone(), channels),
-                I16 => Self::create_stream_i16(&device, config, callback.clone(), channels),
-                U16 => Self::create_stream_u16(&device, config, callback.clone(), channels),
-                I32 => Self::create_stream_i32(&device, config, callback.clone(), channels),
-                U8 => Self::create_stream_u8(&device, config, callback.clone(), channels),
+                F32 => Self::create_stream_f32(device, config, callback.clone(), channels),
+                I16 => Self::create_stream_i16(device, config, callback.clone(), channels),
+                U16 => Self::create_stream_u16(device, config, callback.clone(), channels),
+                I32 => Self::create_stream_i32(device, config, callback.clone(), channels),
+                U8 => Self::create_stream_u8(device, config, callback.clone(), channels),
 
                 _ => {
                     error!("Unsupported sample format: {:?}", format);
@@ -340,15 +344,6 @@ impl CpalAudioBackend {
     impl_stream_methods!(create_stream_i32, i32, |s| s as f32 / i32::MAX as f32);
     impl_stream_methods!(create_stream_u8, u8, |s| (s as f32 / u8::MAX as f32) * 2.0
         - 1.0);
-
-    /// Returns true if the device is a loopback device
-    fn is_loopback_device(&self, index: usize) -> bool {
-        !self
-            .input_devices
-            .get(index)
-            .map(|(_, is_real_input)| *is_real_input)
-            .unwrap_or(true)
-    }
 
     pub fn new_with_fallback() -> Self {
         let default_host = cpal::default_host();

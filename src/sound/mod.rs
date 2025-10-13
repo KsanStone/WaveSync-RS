@@ -4,6 +4,7 @@ pub mod audio_system;
 pub mod capture_source;
 pub mod cpal_audio_backend;
 pub mod dummy_audio_backend;
+pub mod smoothing;
 pub mod windowing;
 
 #[derive(Debug, Clone, Copy)]
@@ -59,32 +60,12 @@ pub enum SampleFormat {
     F32,
 }
 
-impl SampleFormat {
-    pub fn get_size(&self) -> usize {
-        match self {
-            SampleFormat::U8 => 1,
-            SampleFormat::I16 => 2,
-            SampleFormat::I32 => 4,
-            SampleFormat::F32 => 4,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct FftPeak {
     pub value: f32,
+    #[allow(dead_code)]
     pub index: usize,
     pub interpolated_frequency: f32,
-}
-
-impl FftPeak {
-    pub fn new() -> Self {
-        FftPeak {
-            value: 0.0,
-            index: 0,
-            interpolated_frequency: 0.0,
-        }
-    }
 }
 
 /// Computes the audio frequency that the given bin is associated with
@@ -95,11 +76,6 @@ pub fn frequency_of_bin(bin: usize, rate: usize, fft_size: usize) -> f32 {
 #[inline]
 pub fn scale_to_db(value: f32) -> f32 {
     20.0 * value.log10()
-}
-
-/// Scale the magnitudes in accordance with the db scale
-pub fn db_scale_magnitudes(magnitudes: &mut [f32]) {
-    magnitudes.iter_mut().for_each(|m| *m = scale_to_db(*m));
 }
 
 /// Calculate the bin index that contains the frequency.

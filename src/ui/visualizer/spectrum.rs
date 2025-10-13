@@ -1,20 +1,25 @@
 use crate::egui::Ui;
 use crate::sound::audio_service::AudioService;
-use crate::sound::{AudioChannel, db_scale_magnitudes, frequency_of_bin};
+use crate::sound::smoothing::FloatArraySmoother;
+use crate::sound::smoothing::exponential_falloff_smoother::ExponentialFalloffSmoother;
+use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
+use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{create_pipeline, quad_to_triangles};
-use crate::{define_resource, deref_arc, impl_settings};
-use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
+use crate::{WaveSyncVisuals, define_resource, deref_arc, impl_settings};
+use eframe::egui::{Color32, PaintCallback, PaintCallbackInfo, Rect, Visuals};
+use eframe::wgpu::util::DeviceExt;
 use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub const MAX_BARS: u64 = 4096;
-pub const MIN_BAR_WIDTH: f32 = 2.0;
+pub const MIN_BAR_WIDTH: f32 = 1.0;
 
 deref_arc!(SpectrumVisualizer);
 
@@ -22,12 +27,16 @@ pub struct Inner {
     audio_service: AudioService,
     plot_data: Mutex<PlotData>,
     settings: Mutex<SpectrumVisualizerSettings>,
+    smoother: Mutex<Option<Box<dyn FloatArraySmoother>>>,
     settings_open: AtomicBool,
+    last_draw: Mutex<Instant>,
 }
 
 pub struct SpectrumVisualizerSettings {
     pub channel: AudioChannel,
     pub draw_type: SpectrumVisualizerType,
+    pub smoother_type: SmootherType,
+    pub smoother_factor: f32,
     pub frequency_axis_logarithmic: bool,
 }
 
@@ -35,6 +44,13 @@ pub struct SpectrumVisualizerSettings {
 pub enum SpectrumVisualizerType {
     Bar,
     Line,
+}
+
+#[derive(PartialEq, Copy, Clone)]
+pub enum SmootherType {
+    None,
+    Multiplicative,
+    ExponentialFalloff,
 }
 
 impl SpectrumVisualizer {
@@ -48,9 +64,13 @@ impl SpectrumVisualizer {
             settings: Mutex::new(SpectrumVisualizerSettings {
                 channel: AudioChannel::Master,
                 draw_type: SpectrumVisualizerType::Bar,
+                smoother_type: SmootherType::Multiplicative,
+                smoother_factor: 0.6,
                 frequency_axis_logarithmic: true,
             }),
+            smoother: Mutex::new(Some(Box::new(MultiplicativeSmoother::new(0.6)))),
             settings_open: Default::default(),
+            last_draw: Mutex::new(Instant::now()),
         }))
     }
 }
@@ -64,14 +84,14 @@ impl Visualizer for SpectrumVisualizer {
         *self.plot_data.lock().unwrap() = plot_data
     }
 
-    fn get_draw_callback(&self, rect: Rect) -> PaintCallback {
-        egui_wgpu::Callback::new_paint_callback(rect, SpectrumVisualizerCallback::new(self.clone()))
+    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> PaintCallback {
+        egui_wgpu::Callback::new_paint_callback(rect, SpectrumVisualizerCallback::new(self.clone(), visuals))
     }
 
     impl_settings!("test", ui, this, {
         let mut settings = this.settings.lock().unwrap();
         let mut plot_data = this.plot_data.lock().unwrap();
-        
+
         ui.horizontal(|ui| {
             ui.label("Render mode: ");
 
@@ -85,21 +105,58 @@ impl Visualizer for SpectrumVisualizer {
         ui.horizontal(|ui| {
             ui.label("Frequency axis: ");
 
-            ui.radio_value(&mut settings.frequency_axis_logarithmic, true, "Logarithmic");
+            ui.radio_value(
+                &mut settings.frequency_axis_logarithmic,
+                true,
+                "Logarithmic",
+            );
             ui.radio_value(&mut settings.frequency_axis_logarithmic, false, "Linear");
-            
+
             plot_data.x_axis.logarithmic = settings.frequency_axis_logarithmic;
-        })
+        });
+        ui.horizontal(|ui| {
+            ui.label("Smoothing: ");
+            let before_type = settings.smoother_type;
+            ui.radio_value(&mut settings.smoother_type, SmootherType::None, "None");
+            ui.radio_value(
+                &mut settings.smoother_type,
+                SmootherType::Multiplicative,
+                "Multiplicative",
+            );
+            ui.radio_value(
+                &mut settings.smoother_type,
+                SmootherType::ExponentialFalloff,
+                "Exponential falloff",
+            );
+            if before_type != settings.smoother_type {
+                let mut smoother = this.smoother.lock().unwrap();
+                match settings.smoother_type {
+                    SmootherType::None => smoother.take(),
+                    SmootherType::Multiplicative => {
+                        smoother.replace(Box::new(MultiplicativeSmoother::new(0.1)))
+                    }
+                    SmootherType::ExponentialFalloff => {
+                        smoother.replace(Box::new(ExponentialFalloffSmoother::new()))
+                    }
+                };
+            }
+        });
+        ui.add(egui::Slider::new(&mut settings.smoother_factor, 0.0..=1.0).text("Factor"));
+        if let Some(smoother) = this.smoother.lock().unwrap().as_mut() {
+            smoother.set_factor(settings.smoother_factor);
+        }
     });
 }
 
 pub struct SpectrumVisualizerCallback {
     visualizer: SpectrumVisualizer,
+    color_start: Color32,
+    color_end: Color32,
 }
 
 impl SpectrumVisualizerCallback {
-    pub(crate) fn new(visualizer: SpectrumVisualizer) -> Self {
-        Self { visualizer }
+    pub(crate) fn new(visualizer: SpectrumVisualizer, visuals: &WaveSyncVisuals) -> Self {
+        Self { visualizer, color_start: visuals.wave_color(), color_end: visuals.wave_color() }
     }
 
     fn create_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {
@@ -113,9 +170,18 @@ impl SpectrumVisualizerCallback {
     }
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct Uniforms {
+    color_start: [f32; 4],
+    color_end: [f32; 4],
+}
+
 define_resource!(SpectrumBarsPipeline, wgpu::RenderPipeline);
 define_resource!(SpectrumLinePipeline, wgpu::RenderPipeline);
 define_resource!(SpectrumVertexBuffer, wgpu::Buffer);
+define_resource!(SpectrumUniformBuffer, wgpu::Buffer);
+define_resource!(SpectrumBindGroup, wgpu::BindGroup);
 
 impl CallbackTrait for SpectrumVisualizerCallback {
     fn prepare(
@@ -135,14 +201,50 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("line shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("../../../shader/line.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../../../shader/colored_line.wgsl").into(),
+                ),
+            });
+
+            let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("spectrum_uniform_buffer"),
+                contents: bytemuck::cast_slice(&[Uniforms {
+                    color_start: [1.0, 1.0, 1.0, 1.0],
+                    color_end: [1.0, 1.0, 1.0, 1.0],
+                }]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+            let bind_group_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("spectrum_uniform_buffer_bind_group_layout"),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    }],
+                });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Spectrum Uniform Bind Group"),
+                layout: &bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }],
             });
 
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("spectrum layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
+
+            resources.insert(SpectrumBindGroup(bind_group));
+            resources.insert(SpectrumUniformBuffer(uniform_buffer));
 
             resources.insert(SpectrumBarsPipeline(create_pipeline(
                 device,
@@ -163,6 +265,9 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         Vec::new()
     }
 
+    // TODO use instancing for bar draw
+    // TODO color bars based on height
+    // TODO fill under the line nigger
     fn paint(
         &self,
         info: PaintCallbackInfo,
@@ -172,9 +277,13 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         if !callback_resources.contains::<SpectrumBarsPipeline>() {
             return;
         }
+        let delta_t = self.visualizer.last_draw.lock().unwrap().elapsed();
+        *self.visualizer.last_draw.lock().unwrap() = Instant::now();
 
         let bar_pipeline = callback_resources.get::<SpectrumBarsPipeline>().unwrap();
         let line_pipeline = callback_resources.get::<SpectrumLinePipeline>().unwrap();
+        let uniform_buffer = callback_resources.get::<SpectrumUniformBuffer>().unwrap();
+        let bind_group = callback_resources.get::<SpectrumBindGroup>().unwrap();
 
         let plot_data = self.visualizer.plot_data.lock().unwrap();
         let vertex_buffer = callback_resources.get::<SpectrumVertexBuffer>().unwrap();
@@ -182,8 +291,13 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         let current_source = self.visualizer.audio_service.get_source();
         let settings = self.visualizer.settings.lock().unwrap();
 
-        let mut fft_data = self.visualizer.audio_service.get_fft(AudioChannel::Master);
-        db_scale_magnitudes(&mut fft_data);
+        let fft_target = self.visualizer.audio_service.get_fft(settings.channel);
+        let mut fft_data = fft_target.as_slice();
+        let mut smoother = self.visualizer.smoother.lock().unwrap();
+
+        if let Some(smoother) = smoother.as_mut() {
+            fft_data = smoother.smooth_data(delta_t.as_secs_f32(), &fft_target);
+        }
 
         let fft_output_size = fft_data.len();
         let fft_size = fft_output_size * 2;
@@ -212,12 +326,8 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         let mut coerced_bins = 0;
 
         let mut bars_drawn = 0;
-        for (i, sample) in fft_data
-            .into_iter()
-            .enumerate()
-            .skip(skip)
-            .take(bars_to_draw)
-        {
+        for (i, sample) in fft_data.iter().enumerate().skip(skip).take(bars_to_draw) {
+            let sample = scale_to_db(*sample);
             let [gl_pos, px_pos] = position_array[i];
             let [gl_next_pos, px_next_pos] = position_array[i + 1];
             let mut gl_pos = gl_pos;
@@ -259,7 +369,16 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             bars_drawn += 1;
         }
         queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_array));
+        queue.write_buffer(
+            uniform_buffer,
+            0,
+            bytemuck::bytes_of(&Uniforms {
+                color_start: self.color_start.to_normalized_gamma_f32(),
+                color_end: self.color_end.to_normalized_gamma_f32(),
+            }),
+        );
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        render_pass.set_bind_group(0, &bind_group.0, &[]);
 
         if settings.draw_type == SpectrumVisualizerType::Line {
             render_pass.set_pipeline(line_pipeline);

@@ -33,8 +33,9 @@ impl AudioService {
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),
             samples_written: Default::default(),
             last_fft_idx: Default::default(),
+            last_frame_size: Default::default(),
             current_capture_source: Mutex::new(None),
-            fft_plan: Mutex::new(planner.plan_fft_forward(1024)),
+            fft_plan: Mutex::new(planner.plan_fft_forward(8192)),
             planner: Mutex::new(planner),
             fft_window: Mutex::new(FftWindow::new(WindowMethod::Hamming)),
         }))
@@ -76,8 +77,8 @@ impl AudioService {
             }
         }));
 
-        // let source = backend.find_default_capture_source();
-        let source = devices[0].clone();
+        let source = backend.find_default_capture_source();
+        // let source = devices[0].clone();
         info!(
             "\n▶️  Starting capture from: {} (ID: {})",
             source.name, source.id
@@ -94,12 +95,14 @@ pub struct Inner {
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
     samples_written: AtomicU64,
     last_fft_idx: AtomicU64,
+    last_frame_size: AtomicU64,
     current_capture_source: Mutex<Option<CaptureSource>>,
     planner: Mutex<FftPlanner<f32>>,
     fft_plan: Mutex<Arc<dyn rustfft::Fft<f32>>>,
     fft_window: Mutex<FftWindow>,
 }
 
+// TODO: Ensure that we clone fft and audio buffers as little as possible.
 impl Inner {
     pub fn update_fft_plan(&self, size: usize) {
         let fft_plan = self.planner.lock().unwrap().plan_fft_forward(size);
@@ -107,6 +110,11 @@ impl Inner {
     }
 
     pub fn handle_samples(&self, samples: Vec<Vec<f32>>) {
+        if samples.is_empty() {
+            return;
+        }
+        self.last_frame_size
+            .store(samples[0].len() as u64, Ordering::Release);
         let mut buffer = self.audio_buffer.lock().unwrap();
         let fft_channels = if samples.len() == 1 {
             // Mono audio, no need to mix channels
@@ -273,5 +281,9 @@ impl Inner {
             }
         }
         labels
+    }
+
+    pub fn get_last_frame_size(&self) -> u64 {
+        self.last_frame_size.load(Ordering::Acquire)
     }
 }

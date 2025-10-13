@@ -6,7 +6,7 @@ mod ui;
 use crate::ui::visualizer::spectrum::SpectrumVisualizer;
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
 use crate::ui::visualizer::waveform::WaveformVisualizer;
-use eframe::egui::Widget;
+use eframe::egui::{Color32, Widget};
 use eframe::{egui, wgpu};
 use egui_extras::{Size, StripBuilder};
 use log::info;
@@ -50,12 +50,22 @@ fn main() -> eframe::Result {
 }
 
 struct WaveSync {
-    segments: u32,
     audio_service: sound::audio_service::AudioService,
     waveform_visualizer: WaveformVisualizer,
     spectrum_visualizer: SpectrumVisualizer,
     settings_shown: bool,
     last_update: Instant,
+    visuals: WaveSyncVisuals
+}
+
+struct WaveSyncVisuals {
+    theme: catppuccin_egui::Theme,
+}
+
+impl WaveSyncVisuals {
+    pub fn wave_color(&self) -> Color32 {
+        self.theme.blue
+    }
 }
 
 impl WaveSync {
@@ -63,12 +73,14 @@ impl WaveSync {
         let audio_service = sound::audio_service::AudioService::new();
         audio_service.init();
         Self {
-            segments: 42,
             waveform_visualizer: WaveformVisualizer::new(audio_service.clone()),
             spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone()),
             audio_service,
             settings_shown: false,
             last_update: Instant::now(),
+            visuals: WaveSyncVisuals {
+                theme: catppuccin_egui::MOCHA
+            },
         }
     }
 }
@@ -76,7 +88,7 @@ impl WaveSync {
 impl eframe::App for WaveSync {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.last_update = Instant::now();
-        catppuccin_egui::set_theme(ctx, catppuccin_egui::MOCHA);
+        catppuccin_egui::set_theme(ctx, self.visuals.theme);
         ctx.request_repaint();
 
         egui::TopBottomPanel::bottom("bottom_bar")
@@ -91,6 +103,8 @@ impl eframe::App for WaveSync {
                         ui.label(peak);
                         ui.separator();
                     }
+                    ui.label(format!("[{}]", self.audio_service.get_last_frame_size()));
+
                     let audio_backend = self.audio_service.audio_backend.lock().unwrap();
                     if let Some(dummy_backend) = audio_backend
                         .as_any()
@@ -111,14 +125,18 @@ impl eframe::App for WaveSync {
                 .sizes(Size::remainder(), 2)
                 .vertical(|mut strip| {
                     strip.cell(|ui| {
-                        ui.add(VisualizerWidget::new(Box::new(
-                            self.waveform_visualizer.clone(),
-                        ), ctx));
+                        ui.add(VisualizerWidget::new(
+                            Box::new(self.waveform_visualizer.clone()),
+                            ctx,
+                            &self.visuals
+                        ));
                     });
                     strip.cell(|ui| {
-                        ui.add(VisualizerWidget::new(Box::new(
-                            self.spectrum_visualizer.clone(),
-                        ), ctx));
+                        ui.add(VisualizerWidget::new(
+                            Box::new(self.spectrum_visualizer.clone()),
+                            ctx,
+                            &self.visuals
+                        ));
                     });
                 });
         });
@@ -141,10 +159,33 @@ impl eframe::App for WaveSync {
                             });
                         self.audio_service.set_fft_size(selected);
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("theme");
+                        let selected = &mut self.visuals.theme;
+                        egui::ComboBox::from_id_salt("theme")
+                            .selected_text(theme_text(*selected))
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(selected, catppuccin_egui::MOCHA, "Mocha");
+                                ui.selectable_value(selected, catppuccin_egui::FRAPPE, "Frappe");
+                                ui.selectable_value(selected, catppuccin_egui::LATTE, "Latte");
+                                ui.selectable_value(selected, catppuccin_egui::MACCHIATO, "Machiato");
+                            });
+                    });
                     if ui.button("Close").clicked() {
                         self.settings_shown = false;
                     }
                 });
         }
     }
+}
+
+fn theme_text(theme: catppuccin_egui::Theme) -> String {
+    match theme {
+        catppuccin_egui::MOCHA => "Mocha",
+        catppuccin_egui::FRAPPE => "Frappe",
+        catppuccin_egui::LATTE => "Latte",
+        catppuccin_egui::MACCHIATO => "Machiato",
+        _ => "None"
+    }
+    .to_string()
 }
