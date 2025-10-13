@@ -3,10 +3,9 @@
 mod sound;
 mod ui;
 
-use crate::ui::plot::Plot;
-use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerCallback};
-use crate::ui::visualizer::visualizer_trait::Visualizer;
-use crate::ui::visualizer::waveform::{WaveformVisualizer, WaveformVisualizerCallback};
+use crate::ui::visualizer::spectrum::SpectrumVisualizer;
+use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
+use crate::ui::visualizer::waveform::WaveformVisualizer;
 use eframe::egui::Widget;
 use eframe::{egui, wgpu};
 use egui_extras::{Size, StripBuilder};
@@ -112,20 +111,14 @@ impl eframe::App for WaveSync {
                 .sizes(Size::remainder(), 2)
                 .vertical(|mut strip| {
                     strip.cell(|ui| {
-                        let mut plot_data = self.waveform_visualizer.get_plot_data();
-                        let plot = Plot::new(&mut plot_data);
-                        plot.show(
-                            ui,
-                            WaveformVisualizerCallback::new(self.waveform_visualizer.clone()),
-                        );
+                        ui.add(VisualizerWidget::new(Box::new(
+                            self.waveform_visualizer.clone(),
+                        ), ctx));
                     });
                     strip.cell(|ui| {
-                        let mut plot_data = self.spectrum_visualizer.get_plot_data();
-                        let plot = Plot::new(&mut plot_data);
-                        plot.show(
-                            ui,
-                            SpectrumVisualizerCallback::new(self.spectrum_visualizer.clone()),
-                        );
+                        ui.add(VisualizerWidget::new(Box::new(
+                            self.spectrum_visualizer.clone(),
+                        ), ctx));
                     });
                 });
         });

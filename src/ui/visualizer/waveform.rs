@@ -1,8 +1,10 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
+use crate::ui::create_pipeline;
 use crate::ui::plot::{Axis, PlotData};
-use crate::ui::visualizer::visualizer_trait::Visualizer;
+use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::{define_resource, deref_arc};
+use eframe::egui::{PaintCallback, Rect};
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
@@ -54,6 +56,10 @@ impl Visualizer for WaveformVisualizer {
 
     fn set_plot_data(&self, plot_data: PlotData) {
         *self.plot_data.lock().unwrap() = plot_data;
+    }
+
+    fn get_draw_callback(&self, rect: Rect) -> PaintCallback {
+        egui_wgpu::Callback::new_paint_callback(rect, WaveformVisualizerCallback::new(self.clone()))
     }
 }
 
@@ -107,44 +113,13 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 push_constant_ranges: &[],
             });
 
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("waveform pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Option::from("vs_main"),
-                    compilation_options: Default::default(),
-                    buffers: &[wgpu::VertexBufferLayout {
-                        array_stride: size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &[wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 0,
-                            format: wgpu::VertexFormat::Float32x2,
-                        }],
-                    }],
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Option::from("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Bgra8Unorm,
-                        blend: Some(wgpu::BlendState::REPLACE),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::LineStrip,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: Default::default(),
-                multiview: None,
-                cache: None,
-            });
-
-            resources.insert(WaveformPipeline(pipeline));
+            resources.insert(WaveformPipeline(create_pipeline(
+                device,
+                &shader,
+                &pipeline_layout,
+                wgpu::PrimitiveTopology::LineStrip,
+                "waveform_pipeline",
+            )));
         }
         Vec::new()
     }

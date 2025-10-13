@@ -4,7 +4,7 @@ use crate::sound::capture_source::CaptureSource;
 use crate::sound::{AudioBackendType, SampleFormat};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, Stream, StreamConfig};
-use log::{error, info};
+use log::error;
 use std::any::Any;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
@@ -73,13 +73,13 @@ impl CpalAudioBackend {
         // Enumerate other output devices for additional loopback options
         if let Ok(outputs) = host.output_devices() {
             for device in outputs {
-                if let Some((_, is_default)) = host.default_output_device()
+                if let Some((_, is_default)) = host
+                    .default_output_device()
                     .as_ref()
                     .and_then(|d| Some((d.name().ok()?, true)))
+                    && device.name().ok() == Some(is_default.to_string())
                 {
-                    if device.name().ok() == Some(is_default.to_string()) {
-                        continue; // skip default output already added
-                    }
+                    continue; // skip default output already added
                 }
                 input_devices.push((device, false)); // loopback/output
             }
@@ -153,7 +153,8 @@ impl AudioBackend for CpalAudioBackend {
             .enumerate()
             .filter(|(i, d)| self.is_loopback_device(*i))
             .filter_map(|(i, device)| {
-                device.0
+                device
+                    .0
                     .default_output_config()
                     .ok()
                     .map(|cfg| CaptureSource {

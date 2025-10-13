@@ -1,7 +1,6 @@
-use eframe::egui::{Align2, FontFamily, FontId, Margin, Response, Sense, Ui};
+use eframe::egui::{Align2, FontFamily, FontId, Margin, Rect, Sense, Ui};
 use eframe::emath::Pos2;
 use eframe::epaint::Color32;
-use egui_wgpu::CallbackTrait;
 use std::ops::Sub;
 
 const PLOT_DIGITS: usize = 2;
@@ -198,9 +197,8 @@ impl<'a> Plot<'a> {
         }
     }
 
-    pub fn show(self, ui: &mut Ui, paint_callback: impl CallbackTrait + 'static) -> Response {
-        let (rect, response) =
-            ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
+    pub fn show(self, ui: &mut Ui) -> Rect {
+        let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
 
         let painter = ui.painter();
         let content_rect = rect.sub(Margin {
@@ -292,12 +290,7 @@ impl<'a> Plot<'a> {
             }
         }
 
-        ui.painter().add(egui_wgpu::Callback::new_paint_callback(
-            content_rect,
-            paint_callback,
-        ));
-
-        response
+        content_rect
     }
 }
 

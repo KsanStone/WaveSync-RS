@@ -1,3 +1,3 @@
 pub mod spectrum;
-pub mod visualizer_trait;
+pub mod visualizer_widget;
 pub mod waveform;
