@@ -38,7 +38,7 @@ macro_rules! deref_arc {
     };
 }
 
-fn quad_to_triangles(x_min: f32, y_min: f32, x_max: f32, y_max: f32) -> [[f32; 2]; 6] {
+const fn quad_to_triangles(x_min: f32, y_min: f32, x_max: f32, y_max: f32) -> [[f32; 2]; 6] {
     [
         [x_min, y_min], // triangle 1
         [x_max, y_min],
@@ -49,11 +49,33 @@ fn quad_to_triangles(x_min: f32, y_min: f32, x_max: f32, y_max: f32) -> [[f32; 2
     ]
 }
 
+pub const QUAD_VERTICES: [[f32; 2]; 6] = quad_to_triangles(0.0, 0.0, 1.0, 1.0);
+pub const VERTEX_2D_BUFFER_LAYOUT: wgpu::VertexBufferLayout<'static> = wgpu::VertexBufferLayout {
+    array_stride: size_of::<[f32; 2]>() as wgpu::BufferAddress,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &[wgpu::VertexAttribute {
+        offset: 0,
+        shader_location: 0,
+        format: wgpu::VertexFormat::Float32x2,
+    }],
+};
+
+#[macro_export]
+macro_rules! create_shader {
+    ($device:expr, $name:expr, $source:expr) => {
+        $device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some($name),
+            source: wgpu::ShaderSource::Wgsl(include_str!($source).into()),
+        })
+    };
+}
+
 fn create_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     pipeline_layout: &wgpu::PipelineLayout,
     topology: wgpu::PrimitiveTopology,
+    buffers: &[wgpu::VertexBufferLayout<'_>],
     name: &'static str,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -63,15 +85,7 @@ fn create_pipeline(
             module: shader,
             entry_point: Option::from("vs_main"),
             compilation_options: Default::default(),
-            buffers: &[wgpu::VertexBufferLayout {
-                array_stride: size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &[wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                }],
-            }],
+            buffers,
         },
         fragment: Some(wgpu::FragmentState {
             module: shader,
@@ -79,7 +93,7 @@ fn create_pipeline(
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: wgpu::TextureFormat::Bgra8Unorm,
-                blend: Some(wgpu::BlendState::REPLACE),
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),

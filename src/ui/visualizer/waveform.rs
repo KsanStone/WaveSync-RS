@@ -1,6 +1,6 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
-use crate::ui::create_pipeline;
+use crate::ui::{create_pipeline, VERTEX_2D_BUFFER_LAYOUT};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::{define_resource, deref_arc, WaveSyncVisuals};
@@ -167,6 +167,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 &shader,
                 &pipeline_layout,
                 wgpu::PrimitiveTopology::LineStrip,
+                &[VERTEX_2D_BUFFER_LAYOUT],
                 "waveform_pipeline",
             )));
         }

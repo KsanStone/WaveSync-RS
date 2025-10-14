@@ -6,9 +6,9 @@ use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
 use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::ui::{create_pipeline, quad_to_triangles};
-use crate::{WaveSyncVisuals, define_resource, deref_arc, impl_settings};
-use eframe::egui::{Color32, PaintCallback, PaintCallbackInfo, Rect, Visuals};
+use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
+use crate::{WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings};
+use eframe::egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::util::DeviceExt;
 use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use eframe::{egui, wgpu};
@@ -59,11 +59,11 @@ impl SpectrumVisualizer {
             audio_service,
             plot_data: Mutex::new(PlotData::from_axis(
                 Axis::logarithmic(12.0, 20000.0),
-                Axis::linear(-90.0, 0.0),
+                Axis::linear(-100.0, 0.0),
             )),
             settings: Mutex::new(SpectrumVisualizerSettings {
                 channel: AudioChannel::Master,
-                draw_type: SpectrumVisualizerType::Bar,
+                draw_type: SpectrumVisualizerType::Line,
                 smoother_type: SmootherType::Multiplicative,
                 smoother_factor: 0.6,
                 frequency_axis_logarithmic: true,
@@ -85,7 +85,10 @@ impl Visualizer for SpectrumVisualizer {
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> PaintCallback {
-        egui_wgpu::Callback::new_paint_callback(rect, SpectrumVisualizerCallback::new(self.clone(), visuals))
+        egui_wgpu::Callback::new_paint_callback(
+            rect,
+            SpectrumVisualizerCallback::new(self.clone(), visuals),
+        )
     }
 
     impl_settings!("test", ui, this, {
@@ -156,30 +159,34 @@ pub struct SpectrumVisualizerCallback {
 
 impl SpectrumVisualizerCallback {
     pub(crate) fn new(visualizer: SpectrumVisualizer, visuals: &WaveSyncVisuals) -> Self {
-        Self { visualizer, color_start: visuals.wave_color(), color_end: visuals.wave_color() }
-    }
-
-    fn create_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("spectrum_vertex_buffer"),
-            // Each bar is 2 triangles, each triangle has 3 vertices each has x and y
-            size: MAX_BARS * 2 * 3 * 2 * size_of::<f32>() as u64, // bytes
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        Self {
+            visualizer,
+            color_start: visuals.color_start(),
+            color_end: visuals.color_end(),
+        }
     }
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    color_start: [f32; 4],
     color_end: [f32; 4],
+    color_start: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct BarInstanceData {
+    height: f32,
+    x_1: f32,
+    x_2: f32,
 }
 
 define_resource!(SpectrumBarsPipeline, wgpu::RenderPipeline);
 define_resource!(SpectrumLinePipeline, wgpu::RenderPipeline);
+define_resource!(SpectrumLineFillPipeline, wgpu::RenderPipeline);
 define_resource!(SpectrumVertexBuffer, wgpu::Buffer);
+define_resource!(SpectrumInstanceBuffer, wgpu::Buffer);
 define_resource!(SpectrumUniformBuffer, wgpu::Buffer);
 define_resource!(SpectrumBindGroup, wgpu::BindGroup);
 
@@ -195,16 +202,29 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         if resources.get::<SpectrumBarsPipeline>().is_none() {
             info!("Creating spectrum pipeline");
             resources.insert(queue.clone());
-            resources.insert(SpectrumVertexBuffer(
-                SpectrumVisualizerCallback::create_vertex_buffer(device),
-            ));
+            resources.insert(SpectrumVertexBuffer(device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("spectrum_vertex_buffer"),
+                    contents: bytemuck::cast_slice(&QUAD_VERTICES),
+                    usage: wgpu::BufferUsages::VERTEX,
+                },
+            )));
 
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("line shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../../../shader/colored_line.wgsl").into(),
-                ),
-            });
+            resources.insert(SpectrumInstanceBuffer(device.create_buffer(
+                &wgpu::BufferDescriptor {
+                    label: Some("spectrum_instance_buffer"),
+                    size: MAX_BARS * 4 * size_of::<f64>() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                },
+            )));
+
+            let bar_shader =
+                create_shader!(device, "bar shader", "../../../shader/instanced_bars.wgsl");
+            let line_shader =
+                create_shader!(device, "line shader", "../../../shader/colored_line.wgsl");
+            let line_fill_shader =
+                create_shader!(device, "lf", "../../../shader/instanced_line_fill.wgsl");
 
             let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("spectrum_uniform_buffer"),
@@ -248,26 +268,68 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             resources.insert(SpectrumBarsPipeline(create_pipeline(
                 device,
-                &shader,
+                &bar_shader,
                 &pipeline_layout,
-                wgpu::PrimitiveTopology::TriangleList,
+                Default::default(),
+                &[
+                    VERTEX_2D_BUFFER_LAYOUT,
+                    wgpu::VertexBufferLayout {
+                        array_stride: size_of::<BarInstanceData>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                offset: 0,
+                                shader_location: 1,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 4,
+                                shader_location: 2,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                            wgpu::VertexAttribute {
+                                offset: 8,
+                                shader_location: 3,
+                                format: wgpu::VertexFormat::Float32,
+                            },
+                        ],
+                    },
+                ],
                 "spectrum_bar_pipeline",
+            )));
+
+            resources.insert(SpectrumLineFillPipeline(create_pipeline(
+                device,
+                &line_fill_shader,
+                &pipeline_layout,
+                Default::default(),
+                &[
+                    VERTEX_2D_BUFFER_LAYOUT,
+                    wgpu::VertexBufferLayout {
+                        array_stride: 4 * size_of::<f32>() as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32x4,
+                        }],
+                    },
+                ],
+                "spectrum_line_fill_pipeline",
             )));
 
             resources.insert(SpectrumLinePipeline(create_pipeline(
                 device,
-                &shader,
+                &line_shader,
                 &pipeline_layout,
-                wgpu::PrimitiveTopology::LineStrip,
+                wgpu::PrimitiveTopology::LineList,
+                &[VERTEX_2D_BUFFER_LAYOUT],
                 "spectrum_line_pipeline",
             )));
         }
         Vec::new()
     }
 
-    // TODO use instancing for bar draw
-    // TODO color bars based on height
-    // TODO fill under the line nigger
     fn paint(
         &self,
         info: PaintCallbackInfo,
@@ -282,10 +344,14 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
         let bar_pipeline = callback_resources.get::<SpectrumBarsPipeline>().unwrap();
         let line_pipeline = callback_resources.get::<SpectrumLinePipeline>().unwrap();
+        let line_fill_pipeline = callback_resources
+            .get::<SpectrumLineFillPipeline>()
+            .unwrap();
         let uniform_buffer = callback_resources.get::<SpectrumUniformBuffer>().unwrap();
         let bind_group = callback_resources.get::<SpectrumBindGroup>().unwrap();
 
         let plot_data = self.visualizer.plot_data.lock().unwrap();
+        let instance_buffer = callback_resources.get::<SpectrumInstanceBuffer>().unwrap();
         let vertex_buffer = callback_resources.get::<SpectrumVertexBuffer>().unwrap();
         let queue = callback_resources.get::<Queue>().unwrap();
         let current_source = self.visualizer.audio_service.get_source();
@@ -308,7 +374,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             .bin_of_frequency(plot_data.x_axis.max, fft_size)
             .min(fft_output_size);
         let bars_to_draw = displayed_bins - skip;
-        let mut vertex_array = Vec::with_capacity(bars_to_draw * 2 * 3);
+        let mut instance_data = Vec::with_capacity(bars_to_draw);
         let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1 + skip];
 
         for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
@@ -355,37 +421,51 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             }
             last_px_pos = None;
 
-            if settings.draw_type == SpectrumVisualizerType::Line {
-                vertex_array.push([gl_pos, plot_data.y_axis.gl_pos(v)]);
-            } else {
-                vertex_array.extend_from_slice(&quad_to_triangles(
-                    gl_pos,
-                    -1.0,
-                    gl_next_pos,
-                    plot_data.y_axis.gl_pos(v),
-                ));
-            }
+            instance_data.push(BarInstanceData {
+                height: plot_data.y_axis.gl_pos(v),
+                x_1: gl_pos,
+                x_2: gl_next_pos,
+            });
 
             bars_drawn += 1;
         }
-        queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_array));
+
         queue.write_buffer(
             uniform_buffer,
             0,
             bytemuck::bytes_of(&Uniforms {
-                color_start: self.color_start.to_normalized_gamma_f32(),
                 color_end: self.color_end.to_normalized_gamma_f32(),
+                color_start: self.color_start.to_normalized_gamma_f32(),
             }),
         );
-        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+
         render_pass.set_bind_group(0, &bind_group.0, &[]);
 
+        if bars_drawn == 0 {
+            return;
+        }
+
         if settings.draw_type == SpectrumVisualizerType::Line {
+            let vertex_array: Vec<_> = instance_data
+                .windows(2)
+                .flat_map(|w| [[w[0].x_1, w[0].height], [w[1].x_1, w[1].height]])
+                .collect();
+
+            queue.write_buffer(instance_buffer, 0, bytemuck::cast_slice(&vertex_array));
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+            render_pass.set_pipeline(line_fill_pipeline);
+            render_pass.draw(0..6u32, 0..(bars_drawn - 1));
+
+            render_pass.set_vertex_buffer(0, instance_buffer.slice(..));
             render_pass.set_pipeline(line_pipeline);
-            render_pass.draw(0..bars_drawn as u32, 0..(bars_drawn - 1) as u32);
+            render_pass.draw(0..bars_drawn * 2u32, 0..(bars_drawn - 1));
         } else {
+            queue.write_buffer(instance_buffer, 0, bytemuck::cast_slice(&instance_data));
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
             render_pass.set_pipeline(bar_pipeline);
-            render_pass.draw(0..(bars_drawn * 2 * 3) as u32, 0..(bars_drawn * 2) as u32);
+            render_pass.draw(0..6u32, 0..bars_drawn);
         }
     }
 }

@@ -6,10 +6,9 @@ mod ui;
 use crate::ui::visualizer::spectrum::SpectrumVisualizer;
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
 use crate::ui::visualizer::waveform::WaveformVisualizer;
-use eframe::egui::{Color32, Widget};
-use eframe::{egui, wgpu};
+use eframe::egui::{Color32, IconData, Widget};
+use eframe::egui;
 use egui_extras::{Size, StripBuilder};
-use log::info;
 use std::env;
 use std::ops::RangeInclusive;
 use std::time::Instant;
@@ -19,33 +18,30 @@ fn main() -> eframe::Result {
         unsafe { env::set_var("RUST_LOG", "info") }
     }
     env_logger::init();
+    let icon_bytes = include_bytes!("../icon.png");
+    let image = image::load_from_memory(icon_bytes)
+        .expect("Failed to load icon")
+        .into_rgba8();
+
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    let icon_data = IconData {
+        height,
+        width,
+        rgba,
+    };
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([640.0, 480.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([640.0, 480.0])
+            .with_icon(icon_data),
         ..Default::default()
     };
 
     eframe::run_native(
         "Wavesync",
         options,
-        Box::new(|cc| {
-            let device = &cc.wgpu_render_state.as_ref().unwrap().device;
-            if device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
-                // create query set & buffer
-                let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
-                    label: Some("timestamp_queries"),
-                    ty: wgpu::QueryType::Timestamp,
-                    count: 2,
-                });
-                let resolve_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("timestamp_resolve_buffer"),
-                    size: 16, // enough for 2 timestamps
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                    mapped_at_creation: false,
-                });
-                info!("Time Queries available")
-            }
-            Ok(Box::new(WaveSync::new()))
-        }),
+        Box::new(|_cc| Ok(Box::new(WaveSync::new()))),
     )
 }
 
@@ -55,7 +51,7 @@ struct WaveSync {
     spectrum_visualizer: SpectrumVisualizer,
     settings_shown: bool,
     last_update: Instant,
-    visuals: WaveSyncVisuals
+    visuals: WaveSyncVisuals,
 }
 
 struct WaveSyncVisuals {
@@ -64,6 +60,14 @@ struct WaveSyncVisuals {
 
 impl WaveSyncVisuals {
     pub fn wave_color(&self) -> Color32 {
+        self.theme.blue
+    }
+
+    pub fn color_start(&self) -> Color32 {
+        self.theme.mauve
+    }
+
+    pub fn color_end(&self) -> Color32 {
         self.theme.blue
     }
 }
@@ -79,7 +83,7 @@ impl WaveSync {
             settings_shown: false,
             last_update: Instant::now(),
             visuals: WaveSyncVisuals {
-                theme: catppuccin_egui::MOCHA
+                theme: catppuccin_egui::MOCHA,
             },
         }
     }
@@ -128,14 +132,14 @@ impl eframe::App for WaveSync {
                         ui.add(VisualizerWidget::new(
                             Box::new(self.waveform_visualizer.clone()),
                             ctx,
-                            &self.visuals
+                            &self.visuals,
                         ));
                     });
                     strip.cell(|ui| {
                         ui.add(VisualizerWidget::new(
                             Box::new(self.spectrum_visualizer.clone()),
                             ctx,
-                            &self.visuals
+                            &self.visuals,
                         ));
                     });
                 });
@@ -167,8 +171,12 @@ impl eframe::App for WaveSync {
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(selected, catppuccin_egui::MOCHA, "Mocha");
                                 ui.selectable_value(selected, catppuccin_egui::FRAPPE, "Frappe");
+                                ui.selectable_value(
+                                    selected,
+                                    catppuccin_egui::MACCHIATO,
+                                    "Machiato",
+                                );
                                 ui.selectable_value(selected, catppuccin_egui::LATTE, "Latte");
-                                ui.selectable_value(selected, catppuccin_egui::MACCHIATO, "Machiato");
                             });
                     });
                     if ui.button("Close").clicked() {
@@ -185,7 +193,7 @@ fn theme_text(theme: catppuccin_egui::Theme) -> String {
         catppuccin_egui::FRAPPE => "Frappe",
         catppuccin_egui::LATTE => "Latte",
         catppuccin_egui::MACCHIATO => "Machiato",
-        _ => "None"
+        _ => "None",
     }
     .to_string()
 }
