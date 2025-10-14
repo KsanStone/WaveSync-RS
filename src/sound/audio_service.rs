@@ -7,7 +7,7 @@ use log::info;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use std::ops::Deref;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const CHANNELS: usize = 3;
@@ -34,6 +34,7 @@ impl AudioService {
             samples_written: Default::default(),
             last_fft_idx: Default::default(),
             last_frame_size: Default::default(),
+            fft_rate: AtomicU32::new(60),
             current_capture_source: Mutex::new(None),
             fft_plan: Mutex::new(planner.plan_fft_forward(8192)),
             planner: Mutex::new(planner),
@@ -90,6 +91,7 @@ impl AudioService {
 
 pub struct Inner {
     pub audio_backend: Mutex<Box<dyn crate::sound::audio_backend::AudioBackend>>,
+    pub fft_rate: AtomicU32,
     audio_buffer: Mutex<[Box<CircularBuffer<384000, f32>>; CHANNELS]>,
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
@@ -143,7 +145,10 @@ impl Inner {
     }
 
     fn do_fft(&self, channels: usize) {
-        let fft_sample_offset = 3200;
+        let fft_rate = self.fft_rate.load(Ordering::Acquire);
+        let source = self.get_source();
+        let fft_sample_offset = source.sample_rate as u64 / fft_rate as u64;
+        
         let samples_written = self.samples_written.load(Ordering::Acquire);
         let mut last_fft_idx = self.last_fft_idx.load(Ordering::Acquire);
         let mut latest_fft = self.latest_fft.lock().unwrap();

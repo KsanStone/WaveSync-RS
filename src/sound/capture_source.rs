@@ -57,4 +57,9 @@ impl CaptureSource {
     pub fn wave_length(&self, freq: f32) -> f32 {
         self.sample_rate as f32 / freq
     }
+    
+    pub fn calculate_frequency_resolution(&self, samples: usize) -> f32 {
+        let sample_t = samples as f32 / self.sample_rate as f32;
+        1.0 / sample_t
+    }
 }

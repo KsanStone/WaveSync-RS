@@ -16,6 +16,7 @@ circular-buffer = "1.2.0"
 rustfft = "6.4.1"
 log = "0.4.28"
 image = "0.25.8"
+egui-phosphor = "0.10.0"
 
 [profile.dev.package.rustfft]
 opt-level = 3

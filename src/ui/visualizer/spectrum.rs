@@ -91,7 +91,7 @@ impl Visualizer for SpectrumVisualizer {
         )
     }
 
-    impl_settings!("test", ui, this, {
+    impl_settings!("Spectrum Settings", ui, this, {
         let mut settings = this.settings.lock().unwrap();
         let mut plot_data = this.plot_data.lock().unwrap();
 
@@ -144,7 +144,8 @@ impl Visualizer for SpectrumVisualizer {
                 };
             }
         });
-        ui.add(egui::Slider::new(&mut settings.smoother_factor, 0.0..=1.0).text("Factor"));
+        ui.style_mut().spacing.slider_width = 150.0;
+        ui.add(egui::Slider::new(&mut settings.smoother_factor, 0.0..=1.0).text("Factor").min_decimals(3).step_by(0.005));
         if let Some(smoother) = this.smoother.lock().unwrap().as_mut() {
             smoother.set_factor(settings.smoother_factor);
         }

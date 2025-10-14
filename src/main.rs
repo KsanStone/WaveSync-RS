@@ -6,12 +6,12 @@ mod ui;
 use crate::ui::visualizer::spectrum::SpectrumVisualizer;
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
 use crate::ui::visualizer::waveform::WaveformVisualizer;
-use eframe::egui::{Color32, IconData, Widget};
 use eframe::egui;
+use eframe::egui::{Color32, IconData, Sense, Vec2, Widget};
 use egui_extras::{Size, StripBuilder};
 use std::env;
 use std::ops::RangeInclusive;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn main() -> eframe::Result {
     if env::var("RUST_LOG").is_err() {
@@ -41,7 +41,13 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "Wavesync",
         options,
-        Box::new(|_cc| Ok(Box::new(WaveSync::new()))),
+        Box::new(|cc| {
+            let mut fonts = egui::FontDefinitions::default();
+            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+            cc.egui_ctx.set_fonts(fonts);
+
+            Ok(Box::new(WaveSync::new()))
+        }),
     )
 }
 
@@ -99,7 +105,7 @@ impl eframe::App for WaveSync {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("Settings").clicked() {
+                    if ui.button(egui_phosphor::regular::GEAR).clicked() {
                         self.settings_shown = true;
                     }
                     ui.separator();
@@ -148,6 +154,7 @@ impl eframe::App for WaveSync {
             egui::Window::new("Settings")
                 .collapsible(false)
                 .resizable(false)
+                .min_width(300.0)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
@@ -179,9 +186,19 @@ impl eframe::App for WaveSync {
                                 ui.selectable_value(selected, catppuccin_egui::LATTE, "Latte");
                             });
                     });
+                    let mut val = self.audio_service.fft_rate.load(std::sync::atomic::Ordering::Acquire);
+                    ui.horizontal(|ui| {
+                        ui.label("Fft rate");
+                        ui.add(egui::Slider::new(&mut val, 1..=200));
+                        self.audio_service.fft_rate.store(val, std::sync::atomic::Ordering::Release);
+                    });
+                    let min_accurate_freq = self.audio_service.get_source().calculate_frequency_resolution(self.audio_service.get_fft_size());
+                        let duration_between_fft = Duration::from_secs_f64(1.0 / val as f64);
+                        ui.label(format!("Fft interval: {duration_between_fft:?} Min accurate freq: {min_accurate_freq:.1}Hz"));
                     if ui.button("Close").clicked() {
                         self.settings_shown = false;
                     }
+                    ui.allocate_at_least(Vec2::new(ui.available_width(), 0.0), Sense::empty());
                 });
         }
     }

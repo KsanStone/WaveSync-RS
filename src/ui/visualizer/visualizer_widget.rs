@@ -47,7 +47,7 @@ impl<'a> Widget for VisualizerWidget<'a> {
         );
 
         ui.put(settings_rect, |ui: &mut Ui| {
-            if ui.button("S").clicked() {
+            if ui.button(egui_phosphor::regular::GEAR).clicked() {
                 self.visualizer.open_settings();
             }
             self.visualizer.draw_settings(self.ctx);
