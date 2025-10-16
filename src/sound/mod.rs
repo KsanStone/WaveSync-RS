@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 pub mod audio_backend;
 pub mod audio_service;
 pub mod audio_system;
@@ -13,7 +15,7 @@ pub enum AudioBackendType {
     Cpal,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AudioChannel {
     Master,
     Left,

@@ -95,6 +95,10 @@ impl Axis {
         Self::log(self.max)
     }
 
+    pub fn range(&self) -> f32 {
+        self.max - self.min
+    }
+
     /// Returns the positions for ticks in axis-space
     pub fn tick_positions(&self, px_size: f32) -> AxisTicks {
         let mut major_ticks = vec![];

@@ -7,7 +7,7 @@ use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
-use crate::{WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings};
+use crate::{WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings, WaveSyncAppData};
 use eframe::egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::util::DeviceExt;
 use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
@@ -15,8 +15,9 @@ use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
+use serde::{Deserialize, Serialize};
 
 pub const MAX_BARS: u64 = 4096;
 pub const MIN_BAR_WIDTH: f32 = 1.0;
@@ -26,27 +27,39 @@ deref_arc!(SpectrumVisualizer);
 pub struct Inner {
     audio_service: AudioService,
     plot_data: Mutex<PlotData>,
-    settings: Mutex<SpectrumVisualizerSettings>,
+    data: Arc<RwLock<WaveSyncAppData>>,
     smoother: Mutex<Option<Box<dyn FloatArraySmoother>>>,
     settings_open: AtomicBool,
     last_draw: Mutex<Instant>,
+    channel: AudioChannel,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SpectrumVisualizerSettings {
-    pub channel: AudioChannel,
     pub draw_type: SpectrumVisualizerType,
     pub smoother_type: SmootherType,
     pub smoother_factor: f32,
     pub frequency_axis_logarithmic: bool,
 }
 
-#[derive(PartialEq)]
+impl Default for SpectrumVisualizerSettings {
+    fn default() -> Self {
+        Self {
+            draw_type: SpectrumVisualizerType::Bar,
+            smoother_type: SmootherType::Multiplicative,
+            smoother_factor: 0.7,
+            frequency_axis_logarithmic: true,
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Serialize, Deserialize)]
 pub enum SpectrumVisualizerType {
     Bar,
     Line,
 }
 
-#[derive(PartialEq, Copy, Clone)]
+#[derive(PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
 pub enum SmootherType {
     None,
     Multiplicative,
@@ -54,20 +67,15 @@ pub enum SmootherType {
 }
 
 impl SpectrumVisualizer {
-    pub fn new(audio_service: AudioService) -> Self {
+    pub fn new(audio_service: AudioService, channel: AudioChannel, data: Arc<RwLock<WaveSyncAppData>>) -> Self {
         Self(Arc::new(Inner {
             audio_service,
+            channel,
             plot_data: Mutex::new(PlotData::from_axis(
                 Axis::logarithmic(12.0, 20000.0),
                 Axis::linear(-100.0, 0.0),
             )),
-            settings: Mutex::new(SpectrumVisualizerSettings {
-                channel: AudioChannel::Master,
-                draw_type: SpectrumVisualizerType::Line,
-                smoother_type: SmootherType::Multiplicative,
-                smoother_factor: 0.6,
-                frequency_axis_logarithmic: true,
-            }),
+            data,
             smoother: Mutex::new(Some(Box::new(MultiplicativeSmoother::new(0.6)))),
             settings_open: Default::default(),
             last_draw: Mutex::new(Instant::now()),
@@ -80,10 +88,6 @@ impl Visualizer for SpectrumVisualizer {
         self.plot_data.lock().unwrap().clone()
     }
 
-    fn set_plot_data(&self, plot_data: PlotData) {
-        *self.plot_data.lock().unwrap() = plot_data
-    }
-
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> PaintCallback {
         egui_wgpu::Callback::new_paint_callback(
             rect,
@@ -92,45 +96,71 @@ impl Visualizer for SpectrumVisualizer {
     }
 
     impl_settings!("Spectrum Settings", ui, this, {
-        let mut settings = this.settings.lock().unwrap();
+        let settings = &mut this.data.write().unwrap().spectrum_settings;
         let mut plot_data = this.plot_data.lock().unwrap();
 
         ui.horizontal(|ui| {
             ui.label("Render mode: ");
-
-            ui.radio_value(&mut settings.draw_type, SpectrumVisualizerType::Bar, "Bar");
-            ui.radio_value(
-                &mut settings.draw_type,
-                SpectrumVisualizerType::Line,
-                "Line",
-            );
+            egui::ComboBox::from_id_salt("drawtype")
+                .selected_text(format!("{:?}", settings.draw_type))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut settings.draw_type,
+                        SpectrumVisualizerType::Bar,
+                        "Bar",
+                    );
+                    ui.selectable_value(
+                        &mut settings.draw_type,
+                        SpectrumVisualizerType::Line,
+                        "Line",
+                    );
+                });
         });
+
         ui.horizontal(|ui| {
             ui.label("Frequency axis: ");
-
-            ui.radio_value(
-                &mut settings.frequency_axis_logarithmic,
-                true,
-                "Logarithmic",
-            );
-            ui.radio_value(&mut settings.frequency_axis_logarithmic, false, "Linear");
-
+            egui::ComboBox::from_id_salt("freq_axis")
+                .selected_text(if settings.frequency_axis_logarithmic {
+                    "Logarithmic"
+                } else {
+                    "Linear"
+                })
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(settings.frequency_axis_logarithmic, "Logarithmic")
+                        .clicked()
+                    {
+                        settings.frequency_axis_logarithmic = true;
+                    }
+                    if ui
+                        .selectable_label(!settings.frequency_axis_logarithmic, "Linear")
+                        .clicked()
+                    {
+                        settings.frequency_axis_logarithmic = false;
+                    }
+                });
             plot_data.x_axis.logarithmic = settings.frequency_axis_logarithmic;
         });
+
         ui.horizontal(|ui| {
             ui.label("Smoothing: ");
             let before_type = settings.smoother_type;
-            ui.radio_value(&mut settings.smoother_type, SmootherType::None, "None");
-            ui.radio_value(
-                &mut settings.smoother_type,
-                SmootherType::Multiplicative,
-                "Multiplicative",
-            );
-            ui.radio_value(
-                &mut settings.smoother_type,
-                SmootherType::ExponentialFalloff,
-                "Exponential falloff",
-            );
+            egui::ComboBox::from_id_salt("smoothing")
+                .selected_text(format!("{:?}", settings.smoother_type))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut settings.smoother_type, SmootherType::None, "None");
+                    ui.selectable_value(
+                        &mut settings.smoother_type,
+                        SmootherType::Multiplicative,
+                        "Multiplicative",
+                    );
+                    ui.selectable_value(
+                        &mut settings.smoother_type,
+                        SmootherType::ExponentialFalloff,
+                        "Exponential falloff",
+                    );
+                });
+
             if before_type != settings.smoother_type {
                 let mut smoother = this.smoother.lock().unwrap();
                 match settings.smoother_type {
@@ -144,8 +174,14 @@ impl Visualizer for SpectrumVisualizer {
                 };
             }
         });
+
         ui.style_mut().spacing.slider_width = 150.0;
-        ui.add(egui::Slider::new(&mut settings.smoother_factor, 0.0..=1.0).text("Factor").min_decimals(3).step_by(0.005));
+        ui.add(
+            egui::Slider::new(&mut settings.smoother_factor, 0.0..=1.0)
+                .text("Factor")
+                .min_decimals(3)
+                .step_by(0.005),
+        );
         if let Some(smoother) = this.smoother.lock().unwrap().as_mut() {
             smoother.set_factor(settings.smoother_factor);
         }
@@ -343,6 +379,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         let delta_t = self.visualizer.last_draw.lock().unwrap().elapsed();
         *self.visualizer.last_draw.lock().unwrap() = Instant::now();
 
+        let channel = self.visualizer.channel;
         let bar_pipeline = callback_resources.get::<SpectrumBarsPipeline>().unwrap();
         let line_pipeline = callback_resources.get::<SpectrumLinePipeline>().unwrap();
         let line_fill_pipeline = callback_resources
@@ -356,9 +393,9 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         let vertex_buffer = callback_resources.get::<SpectrumVertexBuffer>().unwrap();
         let queue = callback_resources.get::<Queue>().unwrap();
         let current_source = self.visualizer.audio_service.get_source();
-        let settings = self.visualizer.settings.lock().unwrap();
+        let settings = &self.visualizer.data.read().unwrap().spectrum_settings;
 
-        let fft_target = self.visualizer.audio_service.get_fft(settings.channel);
+        let fft_target = self.visualizer.audio_service.get_fft(channel);
         let mut fft_data = fft_target.as_slice();
         let mut smoother = self.visualizer.smoother.lock().unwrap();
 

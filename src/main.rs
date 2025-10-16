@@ -3,14 +3,18 @@
 mod sound;
 mod ui;
 
-use crate::ui::visualizer::spectrum::SpectrumVisualizer;
+use crate::sound::AudioChannel;
+use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
-use crate::ui::visualizer::waveform::WaveformVisualizer;
+use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
 use eframe::egui;
 use eframe::egui::{Color32, IconData, Sense, Vec2, Widget};
 use egui_extras::{Size, StripBuilder};
+use serde::{Deserialize, Serialize};
+use std::default::Default;
 use std::env;
 use std::ops::RangeInclusive;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 fn main() -> eframe::Result {
@@ -39,14 +43,20 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "Wavesync",
+        "WaveSync",
         options,
         Box::new(|cc| {
             let mut fonts = egui::FontDefinitions::default();
             egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
             cc.egui_ctx.set_fonts(fonts);
 
-            Ok(Box::new(WaveSync::new()))
+            let data: WaveSyncAppData = if let Some(storage) = cc.storage {
+                eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
+            } else {
+                Default::default()
+            };
+
+            Ok(Box::new(WaveSync::new(data)))
         }),
     )
 }
@@ -58,6 +68,13 @@ struct WaveSync {
     settings_shown: bool,
     last_update: Instant,
     visuals: WaveSyncVisuals,
+    data: Arc<RwLock<WaveSyncAppData>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct WaveSyncAppData {
+    pub waveform_settings: WaveformSettings,
+    pub spectrum_settings: SpectrumVisualizerSettings,
 }
 
 struct WaveSyncVisuals {
@@ -79,18 +96,20 @@ impl WaveSyncVisuals {
 }
 
 impl WaveSync {
-    fn new() -> Self {
+    fn new(data: WaveSyncAppData) -> Self {
         let audio_service = sound::audio_service::AudioService::new();
         audio_service.init();
+        let data = Arc::new(RwLock::new(data));
         Self {
-            waveform_visualizer: WaveformVisualizer::new(audio_service.clone()),
-            spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone()),
+            waveform_visualizer: WaveformVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone()),
+            spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone()),
             audio_service,
             settings_shown: false,
             last_update: Instant::now(),
             visuals: WaveSyncVisuals {
                 theme: catppuccin_egui::MOCHA,
             },
+            data,
         }
     }
 }
@@ -108,6 +127,22 @@ impl eframe::App for WaveSync {
                     if ui.button(egui_phosphor::regular::GEAR).clicked() {
                         self.settings_shown = true;
                     }
+                    ui.separator();
+
+                    {
+                        let sources = self.audio_service.available_sources.lock().unwrap();
+                        let mut current_value = self.audio_service.get_source().id;
+                        egui::ComboBox::from_id_salt("source_select")
+                            .selected_text(self.audio_service.get_source().name)
+                            .show_ui(ui, |ui| {
+                                for source in &*sources {
+                                    ui.selectable_value(&mut current_value, source.id.clone(), source.name.clone());
+                                }
+                            });
+                        drop(sources);
+                        self.audio_service.update_source(current_value);
+                    }
+
                     ui.separator();
                     for peak in self.audio_service.get_peak_labels() {
                         ui.label(peak);
@@ -155,7 +190,7 @@ impl eframe::App for WaveSync {
                 .collapsible(false)
                 .resizable(false)
                 .min_width(300.0)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label("Fft size");
@@ -202,6 +237,20 @@ impl eframe::App for WaveSync {
                 });
         }
     }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let data = self.data.read().unwrap();
+        eframe::set_value(storage, eframe::APP_KEY, &*data);
+    }
+}
+
+/// Format a number such that its length doesn't vary and jitter the ui
+pub fn stable_num(length: usize, decimals: usize, val: f32) -> String {
+    let val = format!("{:.1$}", val, decimals);
+    let missing_length = length.saturating_sub(val.len());
+    let pad = "-".repeat(missing_length);
+
+    format!("{}{}", pad, val)
 }
 
 fn theme_text(theme: catppuccin_egui::Theme) -> String {

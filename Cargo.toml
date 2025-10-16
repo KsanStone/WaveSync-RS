@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eframe = { version = "0.32.3",features = ["default", "wgpu"] }
+eframe = { version = "0.32.3",features = ["default", "wgpu", "persistence"] }
 egui_extras = "0.32.3"
 egui-wgpu = "0.32.3"
 catppuccin-egui = { version = "5.6.0", default-features = false, features = ["egui32"] }
@@ -17,6 +17,7 @@ rustfft = "6.4.1"
 log = "0.4.28"
 image = "0.25.8"
 egui-phosphor = "0.10.0"
+serde = { version = "1.0.225", features = ["derive"] }
 
 [profile.dev.package.rustfft]
 opt-level = 3

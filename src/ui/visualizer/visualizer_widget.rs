@@ -1,16 +1,14 @@
 use crate::ui::plot::{Plot, PlotData};
-use eframe::egui::{Pos2, Rect, Response, Ui, Visuals, Widget};
-use eframe::{egui, epaint};
 use crate::WaveSyncVisuals;
+use eframe::egui::{Pos2, Rect, Response, Ui, Widget};
+use eframe::{egui, epaint};
 
 pub trait Visualizer {
     fn get_plot_data(&self) -> PlotData;
 
-    fn set_plot_data(&self, plot_data: PlotData);
-
     fn accept_fft(&self, _fft_data: &Vec<Vec<f32>>, _fft_size: usize) {}
 
-    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> epaint::PaintCallback;
+    fn get_draw_callback(&self, rect: Rect, visuals: & WaveSyncVisuals) -> epaint::PaintCallback;
 
     fn draw_settings(&self, ctx: &egui::Context) {}
 
@@ -20,11 +18,11 @@ pub trait Visualizer {
 pub struct VisualizerWidget<'a> {
     visualizer: Box<dyn Visualizer>,
     ctx: &'a egui::Context,
-    wavesync_visuals: &'a WaveSyncVisuals
+    wavesync_visuals: &'a WaveSyncVisuals,
 }
 
 impl<'a> VisualizerWidget<'a> {
-    pub fn new(visualizer: Box<dyn Visualizer>, ctx: &'a egui::Context, wavesync_visuals: &'a WaveSyncVisuals) -> Self {
+    pub fn new(visualizer: Box<dyn Visualizer + 'static>, ctx: &'a egui::Context, wavesync_visuals: &'a WaveSyncVisuals) -> Self {
         Self { visualizer, ctx, wavesync_visuals }
     }
 }

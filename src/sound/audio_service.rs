@@ -1,14 +1,16 @@
 use crate::sound::capture_source::CaptureSource;
-use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
+use crate::stable_num;
 use circular_buffer::CircularBuffer;
+use eframe::egui::RichText;
 use log::info;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use crate::sound::cpal_audio_backend::CpalAudioBackend;
 
 const CHANNELS: usize = 3;
 
@@ -27,7 +29,7 @@ impl AudioService {
         let mut planner = FftPlanner::new();
 
         AudioService(Arc::new(Inner {
-            audio_backend: Mutex::new(Box::new(CpalAudioBackend::new_with_fallback())),
+            audio_backend: Mutex::new(Box::new(CpalAudioBackend::new())),
             audio_buffer: Mutex::new(std::array::from_fn(|_| CircularBuffer::boxed())),
             latest_fft: Mutex::new(std::array::from_fn(|_| vec![])),
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),
@@ -39,6 +41,7 @@ impl AudioService {
             fft_plan: Mutex::new(planner.plan_fft_forward(8192)),
             planner: Mutex::new(planner),
             fft_window: Mutex::new(FftWindow::new(WindowMethod::Hamming)),
+            available_sources: Mutex::new(vec![]),
         }))
     }
 
@@ -86,12 +89,15 @@ impl AudioService {
         );
         backend.start_capture(source.clone());
         self.current_capture_source.lock().unwrap().replace(source);
+        self.available_sources.lock().unwrap().clear();
+        self.available_sources.lock().unwrap().extend(devices);
     }
 }
 
 pub struct Inner {
     pub audio_backend: Mutex<Box<dyn crate::sound::audio_backend::AudioBackend>>,
     pub fft_rate: AtomicU32,
+    pub available_sources: Mutex<Vec<CaptureSource>>,
     audio_buffer: Mutex<[Box<CircularBuffer<384000, f32>>; CHANNELS]>,
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
@@ -109,6 +115,22 @@ impl Inner {
     pub fn update_fft_plan(&self, size: usize) {
         let fft_plan = self.planner.lock().unwrap().plan_fft_forward(size);
         *self.fft_plan.lock().unwrap() = fft_plan;
+    }
+
+    pub fn update_source(&self, id: String) {
+        let current_id = self.get_source().id;
+
+        if current_id != id {
+            let available = self.available_sources.lock().unwrap();
+            let mut audio_backend = self.audio_backend.lock().unwrap();
+            let new_source = available.iter().find(|x| x.id == id);
+            if let Some(new_source) = new_source.cloned() {
+                info!("Switching to source: {}", new_source.name);
+                audio_backend.stop_capture();
+                audio_backend.start_capture(new_source.clone());
+                self.current_capture_source.lock().unwrap().replace(new_source);
+            }
+        }
     }
 
     pub fn handle_samples(&self, samples: Vec<Vec<f32>>) {
@@ -148,7 +170,7 @@ impl Inner {
         let fft_rate = self.fft_rate.load(Ordering::Acquire);
         let source = self.get_source();
         let fft_sample_offset = source.sample_rate as u64 / fft_rate as u64;
-        
+
         let samples_written = self.samples_written.load(Ordering::Acquire);
         let mut last_fft_idx = self.last_fft_idx.load(Ordering::Acquire);
         let mut latest_fft = self.latest_fft.lock().unwrap();
@@ -264,22 +286,28 @@ impl Inner {
 
     /// Compute the label with info about estimated frequency peaks for each
     /// currently active channel
-    pub fn get_peak_labels(&self) -> Vec<String> {
+    pub fn get_peak_labels(&self) -> Vec<RichText> {
         let channels = self.get_active_audio_channels();
         let mut labels = vec![];
         for i in 0..channels {
             let audio_chanel: Result<AudioChannel, ()> = i.try_into();
             if let Ok(audio_chanel) = audio_chanel {
                 let fft_peak = self.get_fft_peak(audio_chanel);
-                let label = if let Some(fft_peak) = fft_peak {
-                    format!(
-                        "{}: {:.1}Hz",
-                        audio_chanel.get_label(),
-                        fft_peak.interpolated_frequency
-                    )
-                } else {
-                    format!("{}: --", audio_chanel.get_label())
-                };
+                let label = RichText::new(
+                    if let Some(fft_peak) = fft_peak
+                        && fft_peak.interpolated_frequency > 0.0
+                        && fft_peak.interpolated_frequency < 96000.0
+                    {
+                        format!(
+                            "{}: {}Hz",
+                            audio_chanel.get_label(),
+                            stable_num(7, 1, fft_peak.interpolated_frequency)
+                        )
+                    } else {
+                        format!("{}: -----.-", audio_chanel.get_label())
+                    },
+                )
+                .monospace();
                 labels.push(label);
             } else {
                 break;

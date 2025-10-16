@@ -1,18 +1,21 @@
+use crate::egui::Ui;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
-use crate::ui::{create_pipeline, VERTEX_2D_BUFFER_LAYOUT};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::{define_resource, deref_arc, WaveSyncVisuals};
-use eframe::egui::{PaintCallback, Rect, Visuals};
+use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
+use crate::{WaveSyncVisuals, define_resource, deref_arc, impl_settings, WaveSyncAppData};
+use eframe::egui::{PaintCallback, Rect, Slider};
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu::util::DeviceExt;
 use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
 use std::mem::size_of;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use serde::{Deserialize, Serialize};
 
 const MAX_LINE_SEGMENTS: usize = 1000;
 const PIXELS_PER_WAVE: u64 = 200;
@@ -23,28 +26,37 @@ deref_arc!(WaveformVisualizer);
 pub struct Inner {
     audio_service: AudioService,
     plot_data: Mutex<PlotData>,
-    settings: Mutex<WaveformSettings>,
+    settings_open: AtomicBool,
+    channel: AudioChannel,
+    data: Arc<RwLock<WaveSyncAppData>>
 }
 
+#[derive(Debug, Deserialize, Serialize)]
 pub struct WaveformSettings {
-    pub channel: AudioChannel,
     pub align_to_peak: bool,
     pub duration: Duration,
 }
 
+impl Default for WaveformSettings {
+    fn default() -> Self {
+        Self {
+            align_to_peak: true,
+            duration: Duration::from_millis(150),
+        }
+    }
+}
+
 impl WaveformVisualizer {
-    pub fn new(audio_service: AudioService) -> Self {
+    pub fn new(audio_service: AudioService, channel: AudioChannel, data: Arc<RwLock<WaveSyncAppData>>) -> Self {
         Self(Arc::new(Inner {
             audio_service,
+            channel,
             plot_data: Mutex::new(
                 PlotData::from_axis(Axis::linear(0.0, 1.0), Axis::linear(-1.0, 1.0))
                     .x_axis_shown(false),
             ),
-            settings: Mutex::new(WaveformSettings {
-                channel: AudioChannel::Master,
-                align_to_peak: true,
-                duration: Duration::from_millis(150),
-            }),
+            settings_open: Default::default(),
+            data,
         }))
     }
 }
@@ -54,16 +66,37 @@ impl Visualizer for WaveformVisualizer {
         self.plot_data.lock().unwrap().clone()
     }
 
-    fn set_plot_data(&self, plot_data: PlotData) {
-        *self.plot_data.lock().unwrap() = plot_data;
-    }
-
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> PaintCallback {
         egui_wgpu::Callback::new_paint_callback(
             rect,
             WaveformVisualizerCallback::new(self.clone(), visuals),
         )
     }
+
+    impl_settings!("Spectrum Settings", ui, this, {
+        let settings = &mut this.data.write().unwrap().waveform_settings;
+        let mut plot_data = this.plot_data.lock().unwrap();
+
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut settings.align_to_peak, "Align to peak");
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Duration");
+            let mut duration_ms = settings.duration.as_millis() as u64;
+            ui.add(Slider::new(&mut duration_ms, 50 ..= 500));
+            settings.duration = Duration::from_millis(duration_ms);
+            ui.label("ms");
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Range");
+            let mut range = plot_data.y_axis.range();
+            ui.add(Slider::new(&mut range, 0.1 ..= 3.0));
+            plot_data.y_axis.min = -range * 0.5;
+            plot_data.y_axis.max = range * 0.5;
+        })
+    });
 }
 
 pub struct WaveformVisualizerCallback {
@@ -180,9 +213,11 @@ impl CallbackTrait for WaveformVisualizerCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         resources: &CallbackResources,
     ) {
-        let settings = self.visualizer.settings.lock().unwrap();
+        let channel = self.visualizer.channel;
+        let settings = &self.visualizer.data.read().unwrap().waveform_settings;
         let source = self.visualizer.audio_service.get_source();
         let audio_service = &self.visualizer.audio_service;
+        let plot_data = self.visualizer.plot_data.lock().unwrap();
         if let Some(pipeline) = resources.get::<WaveformPipeline>() {
             let queue = resources.get::<wgpu::Queue>().unwrap();
 
@@ -199,7 +234,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
 
             let mut drop = 0;
             let mut take = to_read;
-            let peak = audio_service.get_fft_peak(settings.channel);
+            let peak = audio_service.get_fft_peak(channel);
 
             if settings.align_to_peak
                 && let Some(peak) = peak
@@ -228,7 +263,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
             }
 
             let latest_samples =
-                audio_service.get_samples_aligned(settings.channel, to_read, drop as usize, take);
+                audio_service.get_samples_aligned(channel, to_read, drop as usize, take);
             let step = (latest_samples.len() / half_buffer_size as usize).max(1);
 
             let mut vertices = vec![[0.0, 0.0]; (buffer_size as usize).min(latest_samples.len())];
@@ -240,7 +275,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 }
                 vertices[vertex_index] = [
                     i as f32 / latest_samples.len() as f32 * 2.0 - 1.0,
-                    0.0 - *sample,
+                    plot_data.y_axis.gl_pos(*sample)
                 ];
                 vertices_written += 1;
             }
