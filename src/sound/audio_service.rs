@@ -1,4 +1,5 @@
 use crate::sound::capture_source::CaptureSource;
+use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
 use crate::stable_num;
@@ -10,7 +11,6 @@ use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use crate::sound::cpal_audio_backend::CpalAudioBackend;
 
 const CHANNELS: usize = 3;
 
@@ -136,7 +136,10 @@ impl Inner {
                 info!("Switching to source: {}", new_source.name);
                 audio_backend.stop_capture();
                 audio_backend.start_capture(new_source.clone());
-                self.current_capture_source.lock().unwrap().replace(new_source);
+                self.current_capture_source
+                    .lock()
+                    .unwrap()
+                    .replace(new_source);
             }
         }
     }

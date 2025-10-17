@@ -3,12 +3,15 @@ use eframe::egui::Color32;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stop {
     pub offset: f32,
-    pub color: [f32; 4]
+    pub color: [f32; 4],
 }
 
 impl Stop {
     pub fn new(offset: f32, color: Color32) -> Self {
-        Self { offset, color: color.to_normalized_gamma_f32() }
+        Self {
+            offset,
+            color: color.to_normalized_gamma_f32(),
+        }
     }
 }
 

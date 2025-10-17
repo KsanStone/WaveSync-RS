@@ -160,7 +160,7 @@ pub fn create_bind_group_with_layout(
         .map(|(binding, ty, _)| wgpu::BindGroupLayoutEntry {
             binding: *binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: (*ty).clone(),
+            ty: *(*ty),
             count: None,
         })
         .collect();
@@ -273,8 +273,8 @@ pub fn write_2d_texture_row(
     // Specify the layout of the data in memory
     let data_layout = wgpu::TexelCopyBufferLayout {
         offset: 0,
-        bytes_per_row: Some((row.len() * size_of::<f32>()) as u32), // 4 bytes per float
-        rows_per_image: Some(texture.height()),
+        bytes_per_row: Some(size_of_val(row) as u32),
+        rows_per_image: Some(1),
     };
 
     // Size to write

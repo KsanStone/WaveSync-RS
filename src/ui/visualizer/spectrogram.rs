@@ -1,11 +1,11 @@
 use crate::sound::audio_service::AudioService;
-use crate::sound::{AudioChannel, scale_to_db, bin_of_frequency};
+use crate::sound::{AudioChannel, scale_to_db};
 use crate::ui::gradient::{Gradient, Stop};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
     FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, bind_buff, create_bind_group_with_layout,
-    create_pipeline, create_texture, uniform_bindings, write_1d_texture, write_2d_texture_row,
+    create_pipeline, create_texture, write_1d_texture, write_2d_texture_row,
 };
 use crate::{WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc};
 use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
@@ -236,13 +236,13 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         let source = self.visualizer.audio_service.get_source();
 
         let gradient = Gradient::new(vec![
-            Stop::new(0.00, Color32::from_rgb(10, 10, 30)),    // deep blue-black
-            Stop::new(0.15, Color32::from_rgb(0, 30, 120)),    // dark blue
-            Stop::new(0.35, Color32::from_rgb(0, 180, 255)),   // cyan-blue
-            Stop::new(0.55, Color32::from_rgb(0, 255, 100)),   // greenish
-            Stop::new(0.75, Color32::from_rgb(255, 255, 0)),   // bright yellow
-            Stop::new(0.90, Color32::from_rgb(255, 120, 0)),   // orange
-            Stop::new(1.00, Color32::from_rgb(255, 0, 30)),    // red peak
+            Stop::new(0.00, Color32::from_rgb(10, 10, 30)), // deep blue-black
+            Stop::new(0.15, Color32::from_rgb(0, 30, 120)), // dark blue
+            Stop::new(0.35, Color32::from_rgb(0, 180, 255)), // cyan-blue
+            Stop::new(0.55, Color32::from_rgb(0, 255, 100)), // greenish
+            Stop::new(0.75, Color32::from_rgb(255, 255, 0)), // bright yellow
+            Stop::new(0.90, Color32::from_rgb(255, 120, 0)), // orange
+            Stop::new(1.00, Color32::from_rgb(255, 0, 30)), // red peak
         ])
         .unwrap();
         let gradient_data = gradient.pre_compute_lookup(GRADIENT_LOOKUP_LENGTH as usize);
@@ -258,13 +258,8 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             .collect::<Vec<_>>();
 
         if fft_row.len() == 8192 {
-            write_2d_texture_row(
-                queue,
-                storage_tex,
-                &fft_row,
-                head,
-            );
-        } else if fft_row.len() != 0 {
+            write_2d_texture_row(queue, storage_tex, &fft_row, head);
+        } else if !fft_row.is_empty() {
             warn!(
                 "FFT row length {} is not 8192, TODO implement proper resizing",
                 fft_row.len()
@@ -285,15 +280,18 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
 
         let mut pos_map = Vec::with_capacity(info.viewport.height() as usize);
         for i in 0..info.viewport.height() as usize {
-            let freq = plot_data.x_axis.norm_pos_to_val(i as f32 / info.viewport.height());
-            let position_in_buffer = source.bin_of_frequency(freq, self.visualizer.audio_service.get_fft_size());
+            let freq = plot_data
+                .x_axis
+                .norm_pos_to_val(i as f32 / info.viewport.height());
+            let position_in_buffer =
+                source.bin_of_frequency(freq, self.visualizer.audio_service.get_fft_size());
             pos_map.push(position_in_buffer as i32);
         }
         queue.write_buffer(mapping_buffer, 0, bytemuck::cast_slice(&pos_map));
 
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_bind_group(0, &bind_group.0, &[]);
-        render_pass.set_pipeline(&pipeline);
+        render_pass.set_pipeline(pipeline);
         render_pass.draw(0..6, 0..1);
     }
 }

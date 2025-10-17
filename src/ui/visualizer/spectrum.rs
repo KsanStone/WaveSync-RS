@@ -7,17 +7,19 @@ use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
-use crate::{WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings, WaveSyncAppData};
+use crate::{
+    WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings,
+};
 use eframe::egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::util::DeviceExt;
 use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
-use serde::{Deserialize, Serialize};
 
 pub const MAX_BARS: u64 = 4096;
 pub const MIN_BAR_WIDTH: f32 = 1.0;
@@ -67,7 +69,11 @@ pub enum SmootherType {
 }
 
 impl SpectrumVisualizer {
-    pub fn new(audio_service: AudioService, channel: AudioChannel, data: Arc<RwLock<WaveSyncAppData>>) -> Self {
+    pub fn new(
+        audio_service: AudioService,
+        channel: AudioChannel,
+        data: Arc<RwLock<WaveSyncAppData>>,
+    ) -> Self {
         Self(Arc::new(Inner {
             audio_service,
             channel,
