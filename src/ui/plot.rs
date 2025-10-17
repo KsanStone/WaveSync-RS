@@ -180,6 +180,21 @@ impl Axis {
         self.val_to_pos(value, -1.0, 1.0)
     }
 
+    /// [0, 1] ranged pos
+    pub fn norm_pos(&self, value: f32) -> f32 {
+        self.val_to_pos(value, 0.0, 1.0)
+    }
+
+    pub fn norm_pos_to_val(&self, value: f32) -> f32 {
+        if !self.logarithmic {
+            self.min + value * (self.max - self.min)
+        } else {
+            let delta = self.log_upper_bound() - self.log_lower_bound();
+            let delta_v = value * delta;
+            10.0f32.powf(self.log_lower_bound() + delta_v)
+        }
+    }
+
     fn log(val: f32) -> f32 {
         if val <= 0.0 { 0.0 } else { val.log10() }
     }

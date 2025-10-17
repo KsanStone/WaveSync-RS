@@ -3,19 +3,19 @@ use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
-use crate::{WaveSyncVisuals, define_resource, deref_arc, impl_settings, WaveSyncAppData};
+use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
+use crate::{WaveSyncAppData, WaveSyncVisuals, define_resource, deref_arc, impl_settings};
 use eframe::egui::{PaintCallback, Rect, Slider};
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu::util::DeviceExt;
 use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
-use std::mem::size_of;
-use std::sync::{Arc, Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
+use std::mem::size_of;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 const MAX_LINE_SEGMENTS: usize = 1000;
 const PIXELS_PER_WAVE: u64 = 200;
@@ -28,7 +28,7 @@ pub struct Inner {
     plot_data: Mutex<PlotData>,
     settings_open: AtomicBool,
     channel: AudioChannel,
-    data: Arc<RwLock<WaveSyncAppData>>
+    data: Arc<RwLock<WaveSyncAppData>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -47,7 +47,11 @@ impl Default for WaveformSettings {
 }
 
 impl WaveformVisualizer {
-    pub fn new(audio_service: AudioService, channel: AudioChannel, data: Arc<RwLock<WaveSyncAppData>>) -> Self {
+    pub fn new(
+        audio_service: AudioService,
+        channel: AudioChannel,
+        data: Arc<RwLock<WaveSyncAppData>>,
+    ) -> Self {
         Self(Arc::new(Inner {
             audio_service,
             channel,
@@ -84,7 +88,7 @@ impl Visualizer for WaveformVisualizer {
         ui.horizontal(|ui| {
             ui.label("Duration");
             let mut duration_ms = settings.duration.as_millis() as u64;
-            ui.add(Slider::new(&mut duration_ms, 50 ..= 500));
+            ui.add(Slider::new(&mut duration_ms, 50..=500));
             settings.duration = Duration::from_millis(duration_ms);
             ui.label("ms");
         });
@@ -92,7 +96,7 @@ impl Visualizer for WaveformVisualizer {
         ui.horizontal(|ui| {
             ui.label("Range");
             let mut range = plot_data.y_axis.range();
-            ui.add(Slider::new(&mut range, 0.1 ..= 3.0));
+            ui.add(Slider::new(&mut range, 0.1..=3.0));
             plot_data.y_axis.min = -range * 0.5;
             plot_data.y_axis.max = range * 0.5;
         })
@@ -164,28 +168,8 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 }]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
-            let bind_group_layout =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("waveform_uniform_buffer_bind_group_layout"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Uniform Bind Group"),
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
-            });
+            let (bind_group_layout, bind_group) =
+                uniform_bindings(device, 0, &uniform_buffer, "waveform");
 
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("waveform layout"),
@@ -275,7 +259,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 }
                 vertices[vertex_index] = [
                     i as f32 / latest_samples.len() as f32 * 2.0 - 1.0,
-                    plot_data.y_axis.gl_pos(*sample)
+                    plot_data.y_axis.gl_pos(*sample),
                 ];
                 vertices_written += 1;
             }

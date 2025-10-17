@@ -4,6 +4,7 @@ mod sound;
 mod ui;
 
 use crate::sound::AudioChannel;
+use crate::ui::visualizer::spectrogram::SpectrogramVisualizer;
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
@@ -14,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::default::Default;
 use std::env;
 use std::ops::RangeInclusive;
-use std::sync::{Arc, RwLock};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 fn main() -> eframe::Result {
@@ -66,6 +67,7 @@ struct WaveSync {
     audio_service: sound::audio_service::AudioService,
     waveform_visualizer: WaveformVisualizer,
     spectrum_visualizer: SpectrumVisualizer,
+    spectrogram_visualizer: SpectrogramVisualizer,
     settings_shown: bool,
     last_update: Instant,
     visuals: WaveSyncVisuals,
@@ -78,6 +80,7 @@ struct WaveSyncAppData {
     pub spectrum_settings: SpectrumVisualizerSettings,
     pub fft_rate: u32,
     pub fft_size: usize,
+    pub theme_name: String,
 }
 
 struct WaveSyncVisuals {
@@ -104,15 +107,29 @@ impl WaveSync {
         audio_service.init();
         audio_service.update_fft_plan(data.fft_size);
         audio_service.update_fft_rate(data.fft_rate);
+        let theme_name = data.theme_name.clone();
         let data = Arc::new(RwLock::new(data));
         Self {
-            waveform_visualizer: WaveformVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone()),
-            spectrum_visualizer: SpectrumVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone()),
+            waveform_visualizer: WaveformVisualizer::new(
+                audio_service.clone(),
+                AudioChannel::Master,
+                data.clone(),
+            ),
+            spectrum_visualizer: SpectrumVisualizer::new(
+                audio_service.clone(),
+                AudioChannel::Master,
+                data.clone(),
+            ),
+            spectrogram_visualizer: SpectrogramVisualizer::new(
+                audio_service.clone(),
+                AudioChannel::Master,
+                data.clone(),
+            ),
             audio_service,
             settings_shown: false,
             last_update: Instant::now(),
             visuals: WaveSyncVisuals {
-                theme: catppuccin_egui::MOCHA,
+                theme: theme_from_text(&theme_name),
             },
             data,
         }
@@ -141,7 +158,11 @@ impl eframe::App for WaveSync {
                             .selected_text(self.audio_service.get_source().name)
                             .show_ui(ui, |ui| {
                                 for source in &*sources {
-                                    ui.selectable_value(&mut current_value, source.id.clone(), source.name.clone());
+                                    ui.selectable_value(
+                                        &mut current_value,
+                                        source.id.clone(),
+                                        source.name.clone(),
+                                    );
                                 }
                             });
                         drop(sources);
@@ -173,17 +194,30 @@ impl eframe::App for WaveSync {
         egui::CentralPanel::default().show(ctx, |ui| {
             StripBuilder::new(ui)
                 .sizes(Size::remainder(), 2)
-                .vertical(|mut strip| {
+                .horizontal(|mut strip| {
                     strip.cell(|ui| {
-                        ui.add(VisualizerWidget::new(
-                            Box::new(self.waveform_visualizer.clone()),
-                            ctx,
-                            &self.visuals,
-                        ));
+                        StripBuilder::new(ui)
+                            .sizes(Size::remainder(), 2)
+                            .vertical(|mut strip| {
+                                strip.cell(|ui| {
+                                    ui.add(VisualizerWidget::new(
+                                        Box::new(self.waveform_visualizer.clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    ));
+                                });
+                                strip.cell(|ui| {
+                                    ui.add(VisualizerWidget::new(
+                                        Box::new(self.spectrum_visualizer.clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    ));
+                                });
+                            });
                     });
                     strip.cell(|ui| {
                         ui.add(VisualizerWidget::new(
-                            Box::new(self.spectrum_visualizer.clone()),
+                            Box::new(self.spectrogram_visualizer.clone()),
                             ctx,
                             &self.visuals,
                         ));
@@ -248,6 +282,7 @@ impl eframe::App for WaveSync {
 
         data.fft_size = self.audio_service.get_fft_size();
         data.fft_rate = self.audio_service.fft_rate.load(Ordering::Acquire);
+        data.theme_name = theme_text(self.visuals.theme);
 
         eframe::set_value(storage, eframe::APP_KEY, &*data);
     }
@@ -271,4 +306,14 @@ fn theme_text(theme: catppuccin_egui::Theme) -> String {
         _ => "None",
     }
     .to_string()
+}
+
+fn theme_from_text(text: &str) -> catppuccin_egui::Theme {
+    match text {
+        "Mocha" => catppuccin_egui::MOCHA,
+        "Frappe" => catppuccin_egui::FRAPPE,
+        "Latte" => catppuccin_egui::LATTE,
+        "Machiato" => catppuccin_egui::MACCHIATO,
+        _ => catppuccin_egui::MOCHA,
+    }
 }
