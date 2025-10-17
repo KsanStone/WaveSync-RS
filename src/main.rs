@@ -15,6 +15,7 @@ use std::default::Default;
 use std::env;
 use std::ops::RangeInclusive;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 fn main() -> eframe::Result {
@@ -75,6 +76,8 @@ struct WaveSync {
 struct WaveSyncAppData {
     pub waveform_settings: WaveformSettings,
     pub spectrum_settings: SpectrumVisualizerSettings,
+    pub fft_rate: u32,
+    pub fft_size: usize,
 }
 
 struct WaveSyncVisuals {
@@ -99,6 +102,8 @@ impl WaveSync {
     fn new(data: WaveSyncAppData) -> Self {
         let audio_service = sound::audio_service::AudioService::new();
         audio_service.init();
+        audio_service.update_fft_plan(data.fft_size);
+        audio_service.update_fft_rate(data.fft_rate);
         let data = Arc::new(RwLock::new(data));
         Self {
             waveform_visualizer: WaveformVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone()),
@@ -239,7 +244,11 @@ impl eframe::App for WaveSync {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        let data = self.data.read().unwrap();
+        let mut data = self.data.write().unwrap();
+
+        data.fft_size = self.audio_service.get_fft_size();
+        data.fft_rate = self.audio_service.fft_rate.load(Ordering::Acquire);
+
         eframe::set_value(storage, eframe::APP_KEY, &*data);
     }
 }

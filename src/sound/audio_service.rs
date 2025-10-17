@@ -113,8 +113,16 @@ pub struct Inner {
 // TODO: Ensure that we clone fft and audio buffers as little as possible.
 impl Inner {
     pub fn update_fft_plan(&self, size: usize) {
-        let fft_plan = self.planner.lock().unwrap().plan_fft_forward(size);
-        *self.fft_plan.lock().unwrap() = fft_plan;
+        if size > 0 {
+            let fft_plan = self.planner.lock().unwrap().plan_fft_forward(size);
+            *self.fft_plan.lock().unwrap() = fft_plan;
+        }
+    }
+
+    pub fn update_fft_rate(&self, rate: u32) {
+        if rate >= 1 {
+            self.fft_rate.store(rate, Ordering::Release);
+        }
     }
 
     pub fn update_source(&self, id: String) {
