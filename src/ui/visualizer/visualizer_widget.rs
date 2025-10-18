@@ -2,11 +2,12 @@ use crate::WaveSyncVisuals;
 use crate::ui::plot::{Plot, PlotData};
 use eframe::egui::{Pos2, Rect, Response, Ui, Widget};
 use eframe::{egui, epaint};
+use crate::sound::audio_service::CHANNELS;
 
-pub trait Visualizer {
+pub trait Visualizer: Send + Sync + 'static {
     fn get_plot_data(&self) -> PlotData;
 
-    fn accept_fft(&self, _fft_data: &Vec<Vec<f32>>, _fft_size: usize) {}
+    fn accept_fft(&self, _fft_data: &[Vec<f32>; CHANNELS], _fft_size: usize) {}
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> epaint::PaintCallback;
 

@@ -4,7 +4,7 @@ mod sound;
 mod ui;
 
 use crate::sound::AudioChannel;
-use crate::ui::visualizer::spectrogram::SpectrogramVisualizer;
+use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
@@ -78,6 +78,7 @@ struct WaveSync {
 struct WaveSyncAppData {
     pub waveform_settings: WaveformSettings,
     pub spectrum_settings: SpectrumVisualizerSettings,
+    pub spectrogram_settings: SpectrogramSettings,
     pub fft_rate: u32,
     pub fft_size: usize,
     pub theme_name: String,
@@ -104,27 +105,38 @@ impl WaveSyncVisuals {
 impl WaveSync {
     fn new(data: WaveSyncAppData) -> Self {
         let audio_service = sound::audio_service::AudioService::new();
+
         audio_service.init();
         audio_service.update_fft_plan(data.fft_size);
         audio_service.update_fft_rate(data.fft_rate);
         let theme_name = data.theme_name.clone();
         let data = Arc::new(RwLock::new(data));
+
+        let waveform_visualizer = WaveformVisualizer::new(
+            audio_service.clone(),
+            AudioChannel::Master,
+            data.clone(),
+        );
+        let spectrum_visualizer = SpectrumVisualizer::new(
+            audio_service.clone(),
+            AudioChannel::Master,
+            data.clone(),
+        );
+        let spectrogram_visualizer = SpectrogramVisualizer::new(
+            audio_service.clone(),
+            AudioChannel::Master,
+            data.clone(),
+        );
+
+        // Note: this IS a circular reference
+        // But its fine as both the vis, and the audio service, will never be dropper,
+        // so its fine that they will always be alive in memory.
+        audio_service.register_fft_listener(Box::new(spectrogram_visualizer.clone()));
+
         Self {
-            waveform_visualizer: WaveformVisualizer::new(
-                audio_service.clone(),
-                AudioChannel::Master,
-                data.clone(),
-            ),
-            spectrum_visualizer: SpectrumVisualizer::new(
-                audio_service.clone(),
-                AudioChannel::Master,
-                data.clone(),
-            ),
-            spectrogram_visualizer: SpectrogramVisualizer::new(
-                audio_service.clone(),
-                AudioChannel::Master,
-                data.clone(),
-            ),
+            waveform_visualizer,
+            spectrum_visualizer,
+            spectrogram_visualizer,
             audio_service,
             settings_shown: false,
             last_update: Instant::now(),

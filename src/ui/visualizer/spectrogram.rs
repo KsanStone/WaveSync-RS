@@ -1,4 +1,4 @@
-use crate::sound::audio_service::AudioService;
+use crate::sound::audio_service::{AudioService, CHANNELS};
 use crate::sound::{AudioChannel, scale_to_db};
 use crate::ui::gradient::{Gradient, Stop};
 use crate::ui::plot::{Axis, PlotData};
@@ -8,6 +8,7 @@ use crate::ui::{
     create_pipeline, create_texture, write_1d_texture, write_2d_texture_row,
 };
 use crate::{WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc};
+use circular_buffer::CircularBuffer;
 use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
 use eframe::epaint::Color32;
 use eframe::wgpu;
@@ -18,24 +19,34 @@ use eframe::wgpu::{
 };
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::{info, warn};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 
 /// This does not need to be too large, texture sampling will do the rest.
 const GRADIENT_LOOKUP_LENGTH: u32 = 1024;
 /// Generous resolution claim, if we size the mapping buffer in accordance with this
-/// we wont need to resize it every 5 seconds. Its size will be 32kb so thats fine.
+/// we wont need to resize it every 5 seconds.
+/// Its size will be 32kb so that's fine.
 const MAX_RESOLUTION: usize = 8192;
+/// How many fft results we can cache before we next send them to the gpu
+/// if we run out of space, oh well.
+const TEMP_FFT_SIZE: usize = 8;
 
 deref_arc!(SpectrogramVisualizer);
 
 pub struct Inner {
     audio_service: AudioService,
-    plot_data: Mutex<PlotData>,
-    settings_open: AtomicBool,
+    _settings_open: AtomicBool,
     channel: AudioChannel,
     data: Arc<RwLock<WaveSyncAppData>>,
     head_offset: AtomicU32,
+    current_gradient: Mutex<Option<Gradient>>,
+    fft_send_buffer: Mutex<Box<CircularBuffer<TEMP_FFT_SIZE, Vec<f32>>>>,
+    /// Size of the current FFT buffer.
+    fft_buffer_size: AtomicUsize,
+    /// Whether we should resize the FFT buffer in the next frame.
+    do_resize_fft: AtomicBool,
 }
 
 impl SpectrogramVisualizer {
@@ -45,29 +56,60 @@ impl SpectrogramVisualizer {
         data: Arc<RwLock<WaveSyncAppData>>,
     ) -> Self {
         Self(Arc::new(Inner {
+            fft_buffer_size: AtomicUsize::new(audio_service.get_fft_size() / 2),
             audio_service,
             channel,
-            plot_data: Mutex::new(PlotData::from_axis(
-                Axis::logarithmic(12.0, 20000.0),
-                Axis::linear(-100.0, 0.0),
-            )),
-            settings_open: Default::default(),
+            _settings_open: Default::default(),
             data,
             head_offset: Default::default(),
+            current_gradient: Mutex::new(None),
+            fft_send_buffer: Mutex::new(CircularBuffer::boxed()),
+            do_resize_fft: Default::default(),
         }))
     }
 
     fn move_head(&self, buf_size: u32) -> u32 {
-        self.head_offset.fetch_add(1, Ordering::Relaxed) % buf_size
+        let mut val = self.head_offset.load(Ordering::Relaxed);
+        val = (val.wrapping_add(1)) % buf_size;
+        self.head_offset.store(val, Ordering::Relaxed);
+        val
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct SpectrogramSettings {
+    pub is_vertical: bool,
 }
 
 impl Visualizer for SpectrogramVisualizer {
     fn get_plot_data(&self) -> PlotData {
-        self.plot_data.lock().unwrap().clone()
+        let settings = &self.data.read().unwrap().spectrogram_settings;
+        let db_axis = Axis::linear(-100.0, 0.0);
+        let freq_axis = Axis::logarithmic(12.0, 20000.0);
+        if settings.is_vertical {
+            PlotData::from_axis(freq_axis, db_axis)
+        } else {
+            PlotData::from_axis(db_axis, freq_axis)
+        }
     }
 
-    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> PaintCallback {
+    fn accept_fft(&self, fft_data: &[Vec<f32>; CHANNELS], fft_size: usize) {
+        if fft_data.len() <= self.channel.get_index() {
+            return;
+        }
+
+        let mut buffer = self.fft_send_buffer.lock().unwrap();
+        if self.fft_buffer_size.load(Ordering::Relaxed) != fft_size {
+            buffer.clear();
+            // We update the fft size later
+            // As of rn it'll be an indicator that it has changed when
+            // the Vec<f32>'s size doesn't match the fft size.
+        }
+
+        buffer.push_back(fft_data.get(self.channel.get_index()).unwrap().clone());
+    }
+
+    fn get_draw_callback(&self, rect: Rect, _visuals: &WaveSyncVisuals) -> PaintCallback {
         egui_wgpu::Callback::new_paint_callback(
             rect,
             SpectrogramVisualizerCallback::new(self.clone()),
@@ -112,8 +154,11 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         _encoder: &mut CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
-        if resources.get::<SpectrogramPipeline>().is_none() {
+        if resources.get::<SpectrogramPipeline>().is_none() || self.visualizer.do_resize_fft.compare_exchange(true, false, Ordering::Acquire, Ordering::Acquire).is_ok() {
             info!("Creating spectrogram pipeline");
+            // In case we are re-creating the pipeline (fft-size changed)
+            // we'll need to re-fill the gradient texture.
+            self.visualizer.current_gradient.lock().unwrap().take();
             resources.insert(queue.clone());
 
             let spectrogram_shader =
@@ -142,7 +187,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             let (storage_tex, storage_tex_view, storage_tex_bind_ty) = create_texture(
                 "spectrogram_texture",
                 device,
-                8192,
+                self.visualizer.fft_buffer_size.load(Ordering::Acquire) as u32,
                 600,
                 wgpu::TextureFormat::R32Float,
                 false,
@@ -232,8 +277,10 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             .get::<SpectrogramGradientTexture>()
             .unwrap();
         let queue = callback_resources.get::<Queue>().unwrap();
-        let plot_data = self.visualizer.plot_data.lock().unwrap();
+        let plot_data = self.visualizer.get_plot_data();
         let source = self.visualizer.audio_service.get_source();
+        let mut current_gradient = self.visualizer.current_gradient.lock().unwrap();
+        let settings = &self.visualizer.data.read().unwrap().spectrogram_settings;
 
         let gradient = Gradient::new(vec![
             Stop::new(0.00, Color32::from_rgb(10, 10, 30)), // deep blue-black
@@ -245,25 +292,39 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             Stop::new(1.00, Color32::from_rgb(255, 0, 30)), // red peak
         ])
         .unwrap();
-        let gradient_data = gradient.pre_compute_lookup(GRADIENT_LOOKUP_LENGTH as usize);
-        write_1d_texture(queue, gradient_tex, &gradient_data);
+        if current_gradient.is_none() || *current_gradient.as_ref().unwrap() != gradient {
+            let gradient_data = gradient.pre_compute_lookup(GRADIENT_LOOKUP_LENGTH as usize);
+            write_1d_texture(queue, gradient_tex, &gradient_data);
+            *current_gradient = Some(gradient);
+        }
 
-        let head = self.visualizer.move_head(600);
-        let fft_row = self
-            .visualizer
-            .audio_service
-            .get_fft(self.visualizer.channel)
-            .into_iter()
-            .map(|x| plot_data.y_axis.norm_pos(scale_to_db(x)))
-            .collect::<Vec<_>>();
+        let mut send_buffer = self.visualizer.fft_send_buffer.lock().unwrap();
+        let mut due_to_send = Vec::with_capacity(send_buffer.len());
+        while let Some(x) = send_buffer.pop_front() {
+            due_to_send.push(x);
+        }
+        drop(send_buffer); // Do not block the buffer,
+        // thus allowing the audio thread to run cleanly.
 
-        if fft_row.len() == 8192 {
-            write_2d_texture_row(queue, storage_tex, &fft_row, head);
-        } else if !fft_row.is_empty() {
-            warn!(
-                "FFT row length {} is not 8192, TODO implement proper resizing",
-                fft_row.len()
-            );
+        let mut head = self.visualizer.head_offset.load(Ordering::Relaxed);
+        for mut buf in due_to_send {
+            if buf.is_empty() {
+                continue;
+            }
+
+            head = self.visualizer.move_head(600);
+            buf.iter_mut()
+                .for_each(|x| *x = plot_data.y_axis.norm_pos(scale_to_db(*x)));
+
+            if buf.len() == self.visualizer.fft_buffer_size.load(Ordering::Acquire) {
+                write_2d_texture_row(queue, storage_tex, &buf, head);
+            } else {
+                self.visualizer.fft_buffer_size.store(buf.len(), Ordering::Release);
+                // Resize the FFT buffer on the next frame.
+                // This frame we'll render stale data to avoid a "flash";
+                self.visualizer.do_resize_fft.store(true, Ordering::Release);
+                break;
+            }
         }
 
         queue.write_buffer(
@@ -279,10 +340,15 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         );
 
         let mut pos_map = Vec::with_capacity(info.viewport.height() as usize);
-        for i in 0..info.viewport.height() as usize {
-            let freq = plot_data
-                .x_axis
-                .norm_pos_to_val(i as f32 / info.viewport.height());
+        let (relevant_size, mapper_axis) = if settings.is_vertical {
+            (info.viewport.width(), &plot_data.x_axis)
+        } else {
+            (info.viewport.height(), &plot_data.y_axis)
+        };
+
+        for i in 0..relevant_size as usize {
+            let freq = mapper_axis
+                .norm_pos_to_val(i as f32 / relevant_size);
             let position_in_buffer =
                 source.bin_of_frequency(freq, self.visualizer.audio_service.get_fft_size());
             pos_map.push(position_in_buffer as i32);

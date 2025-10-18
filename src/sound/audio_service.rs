@@ -11,8 +11,9 @@ use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use crate::ui::visualizer::visualizer_widget::Visualizer;
 
-const CHANNELS: usize = 3;
+pub const CHANNELS: usize = 3;
 
 #[derive(Clone)]
 pub struct AudioService(Arc<Inner>);
@@ -42,6 +43,7 @@ impl AudioService {
             planner: Mutex::new(planner),
             fft_window: Mutex::new(FftWindow::new(WindowMethod::Hamming)),
             available_sources: Mutex::new(vec![]),
+            fft_listeners: Mutex::new(vec![]),
         }))
     }
 
@@ -108,10 +110,16 @@ pub struct Inner {
     planner: Mutex<FftPlanner<f32>>,
     fft_plan: Mutex<Arc<dyn rustfft::Fft<f32>>>,
     fft_window: Mutex<FftWindow>,
+    fft_listeners: Mutex<Vec<Box<dyn Visualizer>>>
 }
 
 // TODO: Ensure that we clone fft and audio buffers as little as possible.
 impl Inner {
+
+    pub fn register_fft_listener(&self, listener: Box<dyn Visualizer>) {
+        self.fft_listeners.lock().unwrap().push(listener);
+    }
+
     pub fn update_fft_plan(&self, size: usize) {
         if size > 0 {
             let fft_plan = self.planner.lock().unwrap().plan_fft_forward(size);
@@ -192,6 +200,7 @@ impl Inner {
         let mut fft_window = self.fft_window.lock().unwrap();
         let mut fft_peaks = self.fft_peaks.lock().unwrap();
         let current_capture_source = self.current_capture_source.lock().unwrap();
+        let listeners = self.fft_listeners.lock().unwrap();
         if current_capture_source.is_none() {
             return;
         }
@@ -230,6 +239,9 @@ impl Inner {
                 latest_fft[i] = magnitudes;
             }
             self.last_fft_idx.store(last_fft_idx, Ordering::Release);
+            listeners.iter().for_each(|listener| {
+                listener.accept_fft(&latest_fft, fft_plan.len());
+            })
         }
 
         let rate = current_capture_source.as_ref().unwrap().sample_rate;
