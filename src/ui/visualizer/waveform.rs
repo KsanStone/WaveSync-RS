@@ -77,7 +77,7 @@ impl Visualizer for WaveformVisualizer {
         )
     }
 
-    impl_settings!("Spectrum Settings", ui, this, {
+    impl_settings!("Waveform Settings", ui, this, {
         let settings = &mut this.data.write().unwrap().waveform_settings;
         let mut plot_data = this.plot_data.lock().unwrap();
 

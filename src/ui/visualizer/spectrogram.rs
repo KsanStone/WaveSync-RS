@@ -1,3 +1,5 @@
+use crate::egui::Ui;
+use crate::egui;
 use crate::sound::audio_service::{AudioService, CHANNELS};
 use crate::sound::{AudioChannel, scale_to_db};
 use crate::ui::gradient::{Gradient, Stop};
@@ -7,9 +9,11 @@ use crate::ui::{
     FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, bind_buff, create_bind_group_with_layout,
     create_pipeline, create_texture, write_1d_texture, write_2d_texture_row,
 };
-use crate::{WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc};
+use crate::{
+    WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings,
+};
 use circular_buffer::CircularBuffer;
-use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
+use eframe::egui::{ComboBox, PaintCallback, PaintCallbackInfo, Rect};
 use eframe::epaint::Color32;
 use eframe::wgpu;
 use eframe::wgpu::util::DeviceExt;
@@ -19,9 +23,10 @@ use eframe::wgpu::{
 };
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::{info, warn};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 /// This does not need to be too large, texture sampling will do the rest.
 const GRADIENT_LOOKUP_LENGTH: u32 = 1024;
@@ -37,7 +42,7 @@ deref_arc!(SpectrogramVisualizer);
 
 pub struct Inner {
     audio_service: AudioService,
-    _settings_open: AtomicBool,
+    settings_open: AtomicBool,
     channel: AudioChannel,
     data: Arc<RwLock<WaveSyncAppData>>,
     head_offset: AtomicU32,
@@ -45,8 +50,12 @@ pub struct Inner {
     fft_send_buffer: Mutex<Box<CircularBuffer<TEMP_FFT_SIZE, Vec<f32>>>>,
     /// Size of the current FFT buffer.
     fft_buffer_size: AtomicUsize,
+    /// The rate the current buffer is sized for.
+    /// If the rate changes the buffer size needs to be changed as well.
+    fft_rate: AtomicU32,
+    fft_buffer_length: AtomicUsize,
     /// Whether we should resize the FFT buffer in the next frame.
-    do_resize_fft: AtomicBool,
+    do_resize_buffers: AtomicBool,
 }
 
 impl SpectrogramVisualizer {
@@ -57,14 +66,16 @@ impl SpectrogramVisualizer {
     ) -> Self {
         Self(Arc::new(Inner {
             fft_buffer_size: AtomicUsize::new(audio_service.get_fft_size() / 2),
+            fft_rate: AtomicU32::new(audio_service.get_fft_rate()),
             audio_service,
             channel,
-            _settings_open: Default::default(),
+            settings_open: Default::default(),
             data,
             head_offset: Default::default(),
             current_gradient: Mutex::new(None),
             fft_send_buffer: Mutex::new(CircularBuffer::boxed()),
-            do_resize_fft: Default::default(),
+            do_resize_buffers: Default::default(),
+            fft_buffer_length: Default::default(),
         }))
     }
 
@@ -76,9 +87,19 @@ impl SpectrogramVisualizer {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SpectrogramSettings {
     pub is_vertical: bool,
+    pub shown_duration: Duration,
+}
+
+impl Default for SpectrogramSettings {
+    fn default() -> Self {
+        Self {
+            is_vertical: true,
+            shown_duration: Duration::from_secs(10),
+        }
+    }
 }
 
 impl Visualizer for SpectrogramVisualizer {
@@ -115,6 +136,25 @@ impl Visualizer for SpectrogramVisualizer {
             SpectrogramVisualizerCallback::new(self.clone()),
         )
     }
+
+    impl_settings!("Spectrogram Settings", ui, this, {
+        let settings = &mut this.data.write().unwrap().spectrogram_settings;
+
+        ui.horizontal(|ui| {
+            ui.label("Orientation");
+
+            ComboBox::from_id_salt("spectrogram_orientation")
+                .selected_text(if settings.is_vertical {
+                    "Vertical"
+                } else {
+                    "Horizontal"
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut settings.is_vertical, true, "Vertical");
+                    ui.selectable_value(&mut settings.is_vertical, false, "Horizontal");
+                });
+        });
+    });
 }
 
 pub struct SpectrogramVisualizerCallback {
@@ -154,12 +194,22 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         _encoder: &mut CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
-        if resources.get::<SpectrogramPipeline>().is_none() || self.visualizer.do_resize_fft.compare_exchange(true, false, Ordering::Acquire, Ordering::Acquire).is_ok() {
+        if resources.get::<SpectrogramPipeline>().is_none()
+            || self
+                .visualizer
+                .do_resize_buffers
+                .compare_exchange(true, false, Ordering::Acquire, Ordering::Acquire)
+                .is_ok()
+        {
             info!("Creating spectrogram pipeline");
             // In case we are re-creating the pipeline (fft-size changed)
             // we'll need to re-fill the gradient texture.
             self.visualizer.current_gradient.lock().unwrap().take();
             resources.insert(queue.clone());
+            let desired_duration = { self.visualizer.data.read().unwrap().spectrogram_settings.shown_duration };
+            let buffer_length = (desired_duration.as_secs_f32() * self.visualizer.audio_service.get_fft_rate() as f32) as u32;
+            self.visualizer.fft_rate.store(self.visualizer.audio_service.get_fft_rate(), Ordering::Release);
+            self.visualizer.fft_buffer_length.store(buffer_length as usize, Ordering::Release);
 
             let spectrogram_shader =
                 create_shader!(device, "spectrogram", "../../../shader/spectrogram.wgsl");
@@ -188,7 +238,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 "spectrogram_texture",
                 device,
                 self.visualizer.fft_buffer_size.load(Ordering::Acquire) as u32,
-                600,
+                buffer_length,
                 wgpu::TextureFormat::R32Float,
                 false,
             );
@@ -282,6 +332,10 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         let mut current_gradient = self.visualizer.current_gradient.lock().unwrap();
         let settings = &self.visualizer.data.read().unwrap().spectrogram_settings;
 
+        if self.visualizer.audio_service.get_fft_rate() != self.visualizer.fft_rate.load(Ordering::Relaxed) {
+            self.visualizer.do_resize_buffers.store(true, Ordering::Release);
+        }
+
         let gradient = Gradient::new(vec![
             Stop::new(0.00, Color32::from_rgb(10, 10, 30)), // deep blue-black
             Stop::new(0.15, Color32::from_rgb(0, 30, 120)), // dark blue
@@ -306,23 +360,33 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         drop(send_buffer); // Do not block the buffer,
         // thus allowing the audio thread to run cleanly.
 
+        let (frequency_axis_spectrogram_width, frequency_axis, db_axis) = if settings.is_vertical {
+            (info.viewport.width(), &plot_data.x_axis, &plot_data.y_axis)
+        } else {
+            (info.viewport.height(), &plot_data.y_axis, &plot_data.x_axis)
+        };
+
+        let fft_buffer_length = self.visualizer.fft_buffer_length.load(Ordering::Acquire);
+
         let mut head = self.visualizer.head_offset.load(Ordering::Relaxed);
         for mut buf in due_to_send {
             if buf.is_empty() {
                 continue;
             }
 
-            head = self.visualizer.move_head(600);
+            head = self.visualizer.move_head(fft_buffer_length as u32);
             buf.iter_mut()
-                .for_each(|x| *x = plot_data.y_axis.norm_pos(scale_to_db(*x)));
+                .for_each(|x| *x = db_axis.norm_pos(scale_to_db(*x)));
 
             if buf.len() == self.visualizer.fft_buffer_size.load(Ordering::Acquire) {
                 write_2d_texture_row(queue, storage_tex, &buf, head);
             } else {
-                self.visualizer.fft_buffer_size.store(buf.len(), Ordering::Release);
+                self.visualizer
+                    .fft_buffer_size
+                    .store(buf.len(), Ordering::Release);
                 // Resize the FFT buffer on the next frame.
                 // This frame we'll render stale data to avoid a "flash";
-                self.visualizer.do_resize_fft.store(true, Ordering::Release);
+                self.visualizer.do_resize_buffers.store(true, Ordering::Release);
                 break;
             }
         }
@@ -333,24 +397,18 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             bytemuck::cast_slice(&[Uniforms {
                 size: [info.viewport.width() as i32, info.viewport.height() as i32],
                 head_offset: head as i32,
-                buffer_size: 600,
-                is_vertical: 0,
+                buffer_size: fft_buffer_length as i32,
+                is_vertical: settings.is_vertical as i32,
                 _padding: 0,
             }]),
         );
 
-        let mut pos_map = Vec::with_capacity(info.viewport.height() as usize);
-        let (relevant_size, mapper_axis) = if settings.is_vertical {
-            (info.viewport.width(), &plot_data.x_axis)
-        } else {
-            (info.viewport.height(), &plot_data.y_axis)
-        };
+        let mut pos_map = Vec::with_capacity(frequency_axis_spectrogram_width as usize);
+        let fft_size = self.visualizer.audio_service.get_fft_size();
 
-        for i in 0..relevant_size as usize {
-            let freq = mapper_axis
-                .norm_pos_to_val(i as f32 / relevant_size);
-            let position_in_buffer =
-                source.bin_of_frequency(freq, self.visualizer.audio_service.get_fft_size());
+        for i in 0..frequency_axis_spectrogram_width as usize {
+            let freq = frequency_axis.norm_pos_to_val(i as f32 / frequency_axis_spectrogram_width);
+            let position_in_buffer = source.bin_of_frequency(freq, fft_size);
             pos_map.push(position_in_buffer as i32);
         }
         queue.write_buffer(mapping_buffer, 0, bytemuck::cast_slice(&pos_map));

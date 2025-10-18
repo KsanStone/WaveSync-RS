@@ -263,6 +263,10 @@ impl Inner {
         buffer.range(start_idx..end_idx).copied().collect()
     }
 
+    pub fn get_fft_rate(&self) -> u32 {
+        self.fft_rate.load(Ordering::Acquire)
+    }
+    
     pub fn get_fft(&self, channel: AudioChannel) -> Vec<f32> {
         let latest_fft = &self.latest_fft.lock().unwrap()[channel.get_index()];
         latest_fft.clone()
