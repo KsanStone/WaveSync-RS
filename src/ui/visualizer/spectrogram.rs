@@ -48,11 +48,9 @@ pub struct Inner {
     head_offset: AtomicU32,
     current_gradient: Mutex<Option<Gradient>>,
     fft_send_buffer: Mutex<Box<CircularBuffer<TEMP_FFT_SIZE, Vec<f32>>>>,
-    /// Size of the current FFT buffer.
+    /// Size (freq axis "width") of the current FFT buffer.
     fft_buffer_size: AtomicUsize,
-    /// The rate the current buffer is sized for.
-    /// If the rate changes the buffer size needs to be changed as well.
-    fft_rate: AtomicU32,
+    /// Size (time axis "height") of the current FFT buffer.
     fft_buffer_length: AtomicUsize,
     /// Whether we should resize the FFT buffer in the next frame.
     do_resize_buffers: AtomicBool,
@@ -64,9 +62,10 @@ impl SpectrogramVisualizer {
         channel: AudioChannel,
         data: Arc<RwLock<WaveSyncAppData>>,
     ) -> Self {
+        let buff_length = compute_buffer_length(&data, &audio_service);
         Self(Arc::new(Inner {
             fft_buffer_size: AtomicUsize::new(audio_service.get_fft_size() / 2),
-            fft_rate: AtomicU32::new(audio_service.get_fft_rate()),
+            fft_buffer_length: AtomicUsize::new(buff_length),
             audio_service,
             channel,
             settings_open: Default::default(),
@@ -75,7 +74,6 @@ impl SpectrogramVisualizer {
             current_gradient: Mutex::new(None),
             fft_send_buffer: Mutex::new(CircularBuffer::boxed()),
             do_resize_buffers: Default::default(),
-            fft_buffer_length: Default::default(),
         }))
     }
 
@@ -206,10 +204,8 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             // we'll need to re-fill the gradient texture.
             self.visualizer.current_gradient.lock().unwrap().take();
             resources.insert(queue.clone());
-            let desired_duration = { self.visualizer.data.read().unwrap().spectrogram_settings.shown_duration };
-            let buffer_length = (desired_duration.as_secs_f32() * self.visualizer.audio_service.get_fft_rate() as f32) as u32;
-            self.visualizer.fft_rate.store(self.visualizer.audio_service.get_fft_rate(), Ordering::Release);
-            self.visualizer.fft_buffer_length.store(buffer_length as usize, Ordering::Release);
+            let buff_length = compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
+            self.visualizer.fft_buffer_length.store(buff_length, Ordering::Release);
 
             let spectrogram_shader =
                 create_shader!(device, "spectrogram", "../../../shader/spectrogram.wgsl");
@@ -238,7 +234,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 "spectrogram_texture",
                 device,
                 self.visualizer.fft_buffer_size.load(Ordering::Acquire) as u32,
-                buffer_length,
+                buff_length as u32,
                 wgpu::TextureFormat::R32Float,
                 false,
             );
@@ -332,7 +328,8 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         let mut current_gradient = self.visualizer.current_gradient.lock().unwrap();
         let settings = &self.visualizer.data.read().unwrap().spectrogram_settings;
 
-        if self.visualizer.audio_service.get_fft_rate() != self.visualizer.fft_rate.load(Ordering::Relaxed) {
+        let expected_buff_length = compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
+        if expected_buff_length != self.visualizer.fft_buffer_length.load(Ordering::Relaxed) {
             self.visualizer.do_resize_buffers.store(true, Ordering::Release);
         }
 
@@ -418,4 +415,11 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         render_pass.set_pipeline(pipeline);
         render_pass.draw(0..6, 0..1);
     }
+}
+
+fn compute_buffer_length(data: &Arc<RwLock<WaveSyncAppData>>, audio_service: &AudioService) -> usize {
+    let settings = &data.read().unwrap().spectrogram_settings;
+    let fft_rate = audio_service.get_fft_rate();
+    let shown_duration = settings.shown_duration;
+    (shown_duration.as_secs_f32() * fft_rate as f32) as usize
 }

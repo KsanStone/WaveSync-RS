@@ -6,6 +6,7 @@ mod ui;
 use crate::sound::AudioChannel;
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
+use crate::ui::visualizer::vectorscope::VectorscopeVisualizer;
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
 use eframe::egui;
@@ -68,6 +69,7 @@ struct WaveSync {
     waveform_visualizer: WaveformVisualizer,
     spectrum_visualizer: SpectrumVisualizer,
     spectrogram_visualizer: SpectrogramVisualizer,
+    vectorscope_visualizer: VectorscopeVisualizer,
     settings_shown: bool,
     last_update: Instant,
     visuals: WaveSyncVisuals,
@@ -112,21 +114,14 @@ impl WaveSync {
         let theme_name = data.theme_name.clone();
         let data = Arc::new(RwLock::new(data));
 
-        let waveform_visualizer = WaveformVisualizer::new(
-            audio_service.clone(),
-            AudioChannel::Master,
-            data.clone(),
-        );
-        let spectrum_visualizer = SpectrumVisualizer::new(
-            audio_service.clone(),
-            AudioChannel::Master,
-            data.clone(),
-        );
-        let spectrogram_visualizer = SpectrogramVisualizer::new(
-            audio_service.clone(),
-            AudioChannel::Master,
-            data.clone(),
-        );
+        let waveform_visualizer =
+            WaveformVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone());
+        let spectrum_visualizer =
+            SpectrumVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone());
+        let spectrogram_visualizer =
+            SpectrogramVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone());
+        let vectorscope_visualizer =
+            VectorscopeVisualizer::new(audio_service.clone(), data.clone());
 
         // Note: this IS a circular reference
         // But its fine as both the vis, and the audio service, will never be dropper,
@@ -137,6 +132,7 @@ impl WaveSync {
             waveform_visualizer,
             spectrum_visualizer,
             spectrogram_visualizer,
+            vectorscope_visualizer,
             audio_service,
             settings_shown: false,
             last_update: Instant::now(),
@@ -213,14 +209,15 @@ impl eframe::App for WaveSync {
                             .vertical(|mut strip| {
                                 strip.cell(|ui| {
                                     ui.add(VisualizerWidget::new(
-                                        Box::new(self.waveform_visualizer.clone()),
+                                        Box::new(self.spectrum_visualizer.clone()),
                                         ctx,
                                         &self.visuals,
                                     ));
                                 });
+
                                 strip.cell(|ui| {
                                     ui.add(VisualizerWidget::new(
-                                        Box::new(self.spectrum_visualizer.clone()),
+                                        Box::new(self.spectrogram_visualizer.clone()),
                                         ctx,
                                         &self.visuals,
                                     ));
@@ -228,11 +225,25 @@ impl eframe::App for WaveSync {
                             });
                     });
                     strip.cell(|ui| {
-                        ui.add(VisualizerWidget::new(
-                            Box::new(self.spectrogram_visualizer.clone()),
-                            ctx,
-                            &self.visuals,
-                        ));
+                        StripBuilder::new(ui)
+                            .sizes(Size::remainder(), 2)
+                            .vertical(|mut strip| {
+                                strip.cell(|ui| {
+                                    ui.add(VisualizerWidget::new(
+                                        Box::new(self.vectorscope_visualizer.clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    ));
+                                });
+
+                                strip.cell(|ui| {
+                                    ui.add(VisualizerWidget::new(
+                                        Box::new(self.waveform_visualizer.clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    ));
+                                });
+                            });
                     });
                 });
         });
