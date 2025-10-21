@@ -1,4 +1,7 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+#![cfg_attr(
+    not(debug_assertions),
+    windows_subsystem = "windows"
+)] // hide console window on Windows in release
 
 mod sound;
 mod ui;
@@ -9,7 +12,7 @@ use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSett
 use crate::ui::visualizer::vectorscope::VectorscopeVisualizer;
 use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
-use eframe::egui;
+use eframe::{egui, wgpu};
 use eframe::egui::{Color32, IconData, Sense, Vec2, Widget};
 use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
@@ -19,6 +22,8 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
+use egui_wgpu::{WgpuConfiguration, WgpuSetup, WgpuSetupCreateNew};
+use log::error;
 
 fn main() -> eframe::Result {
     if env::var("RUST_LOG").is_err() {
@@ -38,10 +43,36 @@ fn main() -> eframe::Result {
         rgba,
     };
 
+
+    let wgpu_config = WgpuConfiguration {
+        present_mode: wgpu::PresentMode::AutoVsync,
+        desired_maximum_frame_latency: None,
+        wgpu_setup: WgpuSetup::CreateNew(WgpuSetupCreateNew {
+            instance_descriptor: wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                ..Default::default()
+            },
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            native_adapter_selector: None,
+            device_descriptor: Arc::new(|_adapter| wgpu::DeviceDescriptor {
+                label: Some("egui-wgpu device with storage textures"),
+                required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                required_limits: Default::default(),
+                memory_hints: Default::default(),
+                trace: Default::default(),
+            }),
+        }),
+        on_surface_error: Arc::new(|err| {
+            error!("surface error: {err:?}");
+            egui_wgpu::SurfaceErrorAction::SkipFrame
+        }),
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([640.0, 480.0])
             .with_icon(icon_data),
+        wgpu_options: wgpu_config,
         ..Default::default()
     };
 
@@ -187,15 +218,14 @@ impl eframe::App for WaveSync {
                     let audio_backend = self.audio_service.audio_backend.lock().unwrap();
                     if let Some(dummy_backend) = audio_backend
                         .as_any()
-                        .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>(
-                    ) {
+                        .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>() {
                         let mut sequencer_frequency =
                             dummy_backend.sequencer_frequency.lock().unwrap();
                         egui::Slider::new(
                             &mut *sequencer_frequency,
                             RangeInclusive::from(egui::Rangef::new(20.0, 1000.0)),
                         )
-                        .ui(ui);
+                            .ui(ui);
                     }
                 });
             });
@@ -290,8 +320,8 @@ impl eframe::App for WaveSync {
                         self.audio_service.fft_rate.store(val, std::sync::atomic::Ordering::Release);
                     });
                     let min_accurate_freq = self.audio_service.get_source().calculate_frequency_resolution(self.audio_service.get_fft_size());
-                        let duration_between_fft = Duration::from_secs_f64(1.0 / val as f64);
-                        ui.label(format!("Fft interval: {duration_between_fft:?} Min accurate freq: {min_accurate_freq:.1}Hz"));
+                    let duration_between_fft = Duration::from_secs_f64(1.0 / val as f64);
+                    ui.label(format!("Fft interval: {duration_between_fft:?} Min accurate freq: {min_accurate_freq:.1}Hz"));
                     if ui.button("Close").clicked() {
                         self.settings_shown = false;
                     }
@@ -328,7 +358,7 @@ fn theme_text(theme: catppuccin_egui::Theme) -> String {
         catppuccin_egui::MACCHIATO => "Machiato",
         _ => "None",
     }
-    .to_string()
+        .to_string()
 }
 
 fn theme_from_text(text: &str) -> catppuccin_egui::Theme {

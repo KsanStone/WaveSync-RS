@@ -250,6 +250,10 @@ impl Inner {
         }
     }
 
+    pub fn get_samples(&self, channel: AudioChannel, count: usize) -> Vec<f32> {
+        self.get_samples_aligned(channel, count, 0, count)
+    }
+
     pub fn get_samples_aligned(
         &self,
         channel: AudioChannel,
