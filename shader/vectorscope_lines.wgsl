@@ -16,8 +16,8 @@ var<uniform> uniforms: Uniforms;
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     let coord = vec2<i32>(pos.xy);
     let prev = textureLoad(intensity_tex, coord);
-    textureStore(intensity_tex, coord, vec4<f32>(prev.x + uniforms.write_factor, 0.0, 0.0, 0.0));
-    return vec4<f32>(0.0);
+    textureStore(intensity_tex, coord, vec4<f32>(prev.x + uniforms.write_factor + 2, 0.0, 0.0, 0.0));
+    return vec4<f32>(1.0);
 }
 
 struct VertexOutput {

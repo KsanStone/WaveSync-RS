@@ -2,7 +2,7 @@ use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
+use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, FULL_SCREEN_QUAD};
 use crate::{WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc};
 use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::{
@@ -13,6 +13,8 @@ use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
+use eframe::wgpu::util::DeviceExt;
+use log::warn;
 
 const MAX_LINE_SEGMENTS: usize = 1000;
 
@@ -71,6 +73,7 @@ struct Uniforms {
 define_resource!(VectorscopeLinePipeline, wgpu::RenderPipeline);
 define_resource!(VectorscopeBlitPipeline, wgpu::RenderPipeline);
 define_resource!(VectorscopeVertexBuffer, wgpu::Buffer);
+define_resource!(VectorscopeQuadBuffer, wgpu::Buffer);
 define_resource!(VectorscopeUniformBuffer, wgpu::Buffer);
 define_resource!(VectorscopeBindGroup, wgpu::BindGroup);
 
@@ -91,14 +94,20 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
             let line_snatch_shader =
                 create_shader!(device, "decay", "../../../shader/vectorscope_lines.wgsl");
 
-            // let line_blit_shader =
-            //     create_shader!(device, "lblit", "../../../shader/vectorscope_blit.wgsl");
+            let line_blit_shader =
+                create_shader!(device, "lblit", "../../../shader/vectorscope_blit.wgsl");
 
             let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("vectorscope_vertex_buffer"),
                 size: ((MAX_LINE_SEGMENTS + 1) * size_of::<f32>() * 2) as BufferAddress,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
+            });
+
+            let quad_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("vectorscope_quad_buffer"),
+                contents: bytemuck::cast_slice(&[FULL_SCREEN_QUAD]),
+                usage: wgpu::BufferUsages::VERTEX,
             });
 
             let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -119,7 +128,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: TextureFormat::R32Float,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
                 view_formats: &[],
             };
             let tex = device.create_texture(&aux_tex_desc);
@@ -177,6 +186,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
             resources.insert(VectorscopeUniformBuffer(uniform_buffer));
             resources.insert(VectorscopeVertexBuffer(vertex_buffer));
             resources.insert(VectorscopeBindGroup(bind_group));
+            resources.insert(VectorscopeQuadBuffer(quad_buffer));
             resources.insert(VectorscopeLinePipeline(create_pipeline(
                 device,
                 &line_snatch_shader,
@@ -184,6 +194,14 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                 PrimitiveTopology::LineStrip,
                 &[VERTEX_2D_BUFFER_LAYOUT],
                 "vectorscope_line_pipeline",
+            )));
+            resources.insert(VectorscopeBlitPipeline(create_pipeline(
+                device,
+                &line_blit_shader,
+                &pipeline_layout,
+                PrimitiveTopology::TriangleList,
+                &[VERTEX_2D_BUFFER_LAYOUT],
+                "vectorscope_blit_pipeline",
             )));
         }
         vec![]
@@ -196,7 +214,8 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         callback_resources: &CallbackResources,
     ) {
         let line_pipeline = callback_resources.get::<VectorscopeLinePipeline>().unwrap();
-        // let blit_pipeline = callback_resources.get::<VectorscopeBlitPipeline>().unwrap();
+        let blit_pipeline = callback_resources.get::<VectorscopeBlitPipeline>().unwrap();
+        let quad_buffer = callback_resources.get::<VectorscopeQuadBuffer>().unwrap();
         let vertex_buffer = callback_resources.get::<VectorscopeVertexBuffer>().unwrap();
         let uniform_buffer = callback_resources
             .get::<VectorscopeUniformBuffer>()
@@ -206,6 +225,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         let audio_service = &self.visualizer.audio_service;
 
         if audio_service.get_active_audio_channels() < 2 {
+            warn!("Not enough audio channels to draw vectorscope");
             return;
         }
 
@@ -214,6 +234,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         let right_data = audio_service.get_samples(AudioChannel::Right, to_read);
 
         if (left_data.len() != to_read) || (right_data.len() != to_read) {
+            warn!("Not enough samples to draw vectorscope");
             return;
         }
 
@@ -226,8 +247,8 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
             uniform_buffer,
             0,
             bytemuck::bytes_of(&Uniforms {
-                decay_factor: 0.98,
-                write_factor: 1.0,
+                decay_factor: 1.0,
+                write_factor: 100.0,
                 fill_color: self.color.to_normalized_gamma_f32(),
                 _padding: 0,
             }),
@@ -238,7 +259,9 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         render_pass.set_bind_group(0, &bind_group.0, &[]);
         render_pass.draw(0..vertex_data.len() as u32, 0..(vertex_data.len() as u32 - 1));
 
-
-
+        render_pass.set_pipeline(blit_pipeline);
+        render_pass.set_bind_group(0, &bind_group.0, &[]);
+        render_pass.set_vertex_buffer(0, quad_buffer.slice(..));
+        render_pass.draw(0..6, 0..1);
     }
 }
