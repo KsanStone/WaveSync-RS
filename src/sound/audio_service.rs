@@ -2,6 +2,7 @@ use crate::sound::capture_source::CaptureSource;
 use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
+use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::wavesync::stable_num;
 use circular_buffer::CircularBuffer;
 use eframe::egui::RichText;
@@ -11,7 +12,6 @@ use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use crate::ui::visualizer::visualizer_widget::Visualizer;
 
 pub const CHANNELS: usize = 3;
 
@@ -116,12 +116,11 @@ pub struct Inner {
     planner: Mutex<FftPlanner<f32>>,
     fft_plan: Mutex<Arc<dyn rustfft::Fft<f32>>>,
     fft_window: Mutex<FftWindow>,
-    fft_listeners: Mutex<Vec<Box<dyn Visualizer>>>
+    fft_listeners: Mutex<Vec<Box<dyn Visualizer>>>,
 }
 
 // TODO: Ensure that we clone fft and audio buffers as little as possible.
 impl Inner {
-
     pub fn register_fft_listener(&self, listener: Box<dyn Visualizer>) {
         self.fft_listeners.lock().unwrap().push(listener);
     }
@@ -276,7 +275,7 @@ impl Inner {
     pub fn get_fft_rate(&self) -> u32 {
         self.fft_rate.load(Ordering::Acquire)
     }
-    
+
     pub fn get_fft(&self, channel: AudioChannel) -> Vec<f32> {
         let latest_fft = &self.latest_fft.lock().unwrap()[channel.get_index()];
         latest_fft.clone()

@@ -1,40 +1,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
+use crate::app::AppHandler;
+use crate::sound;
 use crate::sound::AudioChannel;
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
-use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
+use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings, SpectrumVisualizerType};
 use crate::ui::visualizer::vectorscope::VectorscopeVisualizer;
-use crate::ui::visualizer::visualizer_widget::VisualizerWidget;
+use crate::ui::visualizer::visualizer_widget::{RenderArgs, Visualizer, VisualizerWidget};
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
 use eframe::egui;
 use eframe::egui::{Color32, Sense, Vec2, Widget};
+use eframe::wgpu::{CommandEncoder, Device, Queue, TextureView};
 use egui_extras::{Size, StripBuilder};
+use egui_wgpu::{CallbackResources, ScreenDescriptor};
 use serde::{Deserialize, Serialize};
 use std::default::Default;
 use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use crate::app::AppHandler;
-use crate::sound;
+use egui::Rect;
+use winit::window::Window;
+use crate::ui::visualizer::VisualizerType;
 
-fn main() -> eframe::Result {
-    Ok(())
-
-    // run_app("WaveSync", options, |cc| {
-    //     let mut fonts = egui::FontDefinitions::default();
-    //     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-    //     cc.egui_ctx.set_fonts(fonts);
-    //
-    //     let data: WaveSyncAppData = if let Some(storage) = cc.storage {
-    //         eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
-    //     } else {
-    //         Default::default()
-    //     };
-    //
-    //     Ok(Box::new(WaveSync::new(data)))
-    // })
-}
+pub type VisualizerBoundCache = std::collections::HashMap<(VisualizerType, AudioChannel), Rect>;
 
 pub struct WaveSync {
     audio_service: sound::audio_service::AudioService,
@@ -46,7 +35,9 @@ pub struct WaveSync {
     last_update: Instant,
     visuals: WaveSyncVisuals,
     data: Arc<RwLock<WaveSyncAppData>>,
+    visualizer_bounds: VisualizerBoundCache,
 }
+
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct WaveSyncAppData {
@@ -112,6 +103,7 @@ impl WaveSync {
                 theme: theme_from_text(&theme_name),
             },
             data,
+            visualizer_bounds: Default::default(),
         }
     }
 }
@@ -184,6 +176,7 @@ impl AppHandler for WaveSync {
                                         Box::new(self.spectrum_visualizer.clone()),
                                         ctx,
                                         &self.visuals,
+                                        &mut Rect::ZERO,
                                     ));
                                 });
 
@@ -192,6 +185,7 @@ impl AppHandler for WaveSync {
                                         Box::new(self.spectrogram_visualizer.clone()),
                                         ctx,
                                         &self.visuals,
+                                        &mut Rect::ZERO,
                                     ));
                                 });
                             });
@@ -201,11 +195,14 @@ impl AppHandler for WaveSync {
                             .sizes(Size::remainder(), 2)
                             .vertical(|mut strip| {
                                 strip.cell(|ui| {
+                                    let mut rect = Rect::ZERO;
                                     ui.add(VisualizerWidget::new(
                                         Box::new(self.vectorscope_visualizer.clone()),
                                         ctx,
                                         &self.visuals,
+                                        &mut rect,
                                     ));
+                                    self.visualizer_bounds.insert((VisualizerType::Vectorscope, AudioChannel::Master), rect);
                                 });
 
                                 strip.cell(|ui| {
@@ -213,6 +210,7 @@ impl AppHandler for WaveSync {
                                         Box::new(self.waveform_visualizer.clone()),
                                         ctx,
                                         &self.visuals,
+                                        &mut Rect::ZERO
                                     ));
                                 });
                             });
@@ -280,6 +278,21 @@ impl AppHandler for WaveSync {
         data.theme_name = theme_text(self.visuals.theme);
 
         eframe::set_value(storage, eframe::APP_KEY, &*data);
+    }
+
+    fn post_egui(
+        &mut self,
+        mut args: RenderArgs,
+    ) {
+        let rect = self.visualizer_bounds.get(&(VisualizerType::Vectorscope, AudioChannel::Master)).cloned();
+        if let Some(rect) = rect {
+            let vectorscope_callback = &self.vectorscope_visualizer.get_post_egui_render(rect, &self.visuals);
+            if let Some(callback) = vectorscope_callback {
+                callback.post_egui_render(&mut args);
+            }
+        }
+
+
     }
 }
 

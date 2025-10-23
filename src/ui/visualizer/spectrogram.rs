@@ -1,5 +1,3 @@
-use egui::Ui;
-use egui;
 use crate::sound::audio_service::{AudioService, CHANNELS};
 use crate::sound::{AudioChannel, scale_to_db};
 use crate::ui::gradient::{Gradient, Stop};
@@ -9,9 +7,8 @@ use crate::ui::{
     FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, bind_buff, create_bind_group_with_layout,
     create_pipeline, create_texture, write_1d_texture, write_2d_texture_row,
 };
-use crate::{
-    create_shader, define_resource, deref_arc, impl_settings,
-};
+use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
+use crate::{create_shader, define_resource, deref_arc, impl_settings};
 use circular_buffer::CircularBuffer;
 use eframe::egui::{ComboBox, PaintCallback, PaintCallbackInfo, Rect};
 use eframe::epaint::Color32;
@@ -21,13 +18,14 @@ use eframe::wgpu::{
     BindingResource, BufferAddress, BufferBindingType, CommandBuffer, CommandEncoder, Device,
     Queue, RenderPass,
 };
+use egui;
+use egui::Ui;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 
 /// This does not need to be too large, texture sampling will do the rest.
 const GRADIENT_LOOKUP_LENGTH: u32 = 1024;
@@ -129,11 +127,11 @@ impl Visualizer for SpectrogramVisualizer {
         buffer.push_back(fft_data.get(self.channel.get_index()).unwrap().clone());
     }
 
-    fn get_draw_callback(&self, rect: Rect, _visuals: &WaveSyncVisuals) -> PaintCallback {
-        egui_wgpu::Callback::new_paint_callback(
+    fn get_draw_callback(&self, rect: Rect, _visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
+        Some(egui_wgpu::Callback::new_paint_callback(
             rect,
             SpectrogramVisualizerCallback::new(self.clone()),
-        )
+        ))
     }
 
     impl_settings!("Spectrogram Settings", ui, this, {
@@ -205,8 +203,11 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             // we'll need to re-fill the gradient texture.
             self.visualizer.current_gradient.lock().unwrap().take();
             resources.insert(queue.clone());
-            let buff_length = compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
-            self.visualizer.fft_buffer_length.store(buff_length, Ordering::Release);
+            let buff_length =
+                compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
+            self.visualizer
+                .fft_buffer_length
+                .store(buff_length, Ordering::Release);
 
             let spectrogram_shader =
                 create_shader!(device, "spectrogram", "../../../shader/spectrogram.wgsl");
@@ -329,9 +330,12 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         let mut current_gradient = self.visualizer.current_gradient.lock().unwrap();
         let settings = &self.visualizer.data.read().unwrap().spectrogram_settings;
 
-        let expected_buff_length = compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
+        let expected_buff_length =
+            compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
         if expected_buff_length != self.visualizer.fft_buffer_length.load(Ordering::Relaxed) {
-            self.visualizer.do_resize_buffers.store(true, Ordering::Release);
+            self.visualizer
+                .do_resize_buffers
+                .store(true, Ordering::Release);
         }
 
         let gradient = Gradient::new(vec![
@@ -384,7 +388,9 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                     .store(buf.len(), Ordering::Release);
                 // Resize the FFT buffer on the next frame.
                 // This frame we'll render stale data to avoid a "flash";
-                self.visualizer.do_resize_buffers.store(true, Ordering::Release);
+                self.visualizer
+                    .do_resize_buffers
+                    .store(true, Ordering::Release);
                 break;
             }
         }
@@ -418,7 +424,10 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
     }
 }
 
-fn compute_buffer_length(data: &Arc<RwLock<WaveSyncAppData>>, audio_service: &AudioService) -> usize {
+fn compute_buffer_length(
+    data: &Arc<RwLock<WaveSyncAppData>>,
+    audio_service: &AudioService,
+) -> usize {
     let settings = &data.read().unwrap().spectrogram_settings;
     let fft_rate = audio_service.get_fft_rate();
     let shown_duration = settings.shown_duration;

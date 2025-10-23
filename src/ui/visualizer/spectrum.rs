@@ -1,4 +1,3 @@
-use egui::Ui;
 use crate::sound::audio_service::AudioService;
 use crate::sound::smoothing::FloatArraySmoother;
 use crate::sound::smoothing::exponential_falloff_smoother::ExponentialFalloffSmoother;
@@ -7,14 +6,13 @@ use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
-use crate::{
-    create_shader, define_resource, deref_arc, impl_settings,
-};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
+use crate::{create_shader, define_resource, deref_arc, impl_settings};
 use eframe::egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::util::DeviceExt;
 use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use eframe::{egui, wgpu};
+use egui::Ui;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -60,6 +58,7 @@ impl Default for SpectrumVisualizerSettings {
 pub enum SpectrumVisualizerType {
     Bar,
     Line,
+    
 }
 
 #[derive(PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
@@ -95,11 +94,11 @@ impl Visualizer for SpectrumVisualizer {
         self.plot_data.lock().unwrap().clone()
     }
 
-    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> PaintCallback {
-        egui_wgpu::Callback::new_paint_callback(
+    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
+        Some(egui_wgpu::Callback::new_paint_callback(
             rect,
             SpectrumVisualizerCallback::new(self.clone(), visuals),
-        )
+        ))
     }
 
     impl_settings!("Spectrum Settings", ui, this, {

@@ -82,6 +82,26 @@ fn create_pipeline(
     buffers: &[wgpu::VertexBufferLayout<'_>],
     name: &'static str,
 ) -> wgpu::RenderPipeline {
+    create_pipeline_color(
+        device,
+        shader,
+        pipeline_layout,
+        topology,
+        buffers,
+        name,
+        wgpu::TextureFormat::Bgra8Unorm,
+    )
+}
+
+fn create_pipeline_color(
+    device: &Device,
+    shader: &wgpu::ShaderModule,
+    pipeline_layout: &wgpu::PipelineLayout,
+    topology: wgpu::PrimitiveTopology,
+    buffers: &[wgpu::VertexBufferLayout<'_>],
+    name: &'static str,
+    target_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(name),
         layout: Some(pipeline_layout),
@@ -96,7 +116,7 @@ fn create_pipeline(
             entry_point: Option::from("fs_main"),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::Bgra8Unorm,
+                format: target_format,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],

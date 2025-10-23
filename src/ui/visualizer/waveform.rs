@@ -1,14 +1,15 @@
-use egui::Ui;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
-use crate::{ define_resource, deref_arc, impl_settings};
+use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
+use crate::{define_resource, deref_arc, impl_settings};
 use eframe::egui::{PaintCallback, Rect, Slider};
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu::util::DeviceExt;
 use eframe::{egui, wgpu};
+use egui::Ui;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::info;
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,6 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
-use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 
 const MAX_LINE_SEGMENTS: usize = 1000;
 const PIXELS_PER_WAVE: u64 = 200;
@@ -71,11 +71,11 @@ impl Visualizer for WaveformVisualizer {
         self.plot_data.lock().unwrap().clone()
     }
 
-    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> PaintCallback {
-        egui_wgpu::Callback::new_paint_callback(
+    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
+        Some(egui_wgpu::Callback::new_paint_callback(
             rect,
             WaveformVisualizerCallback::new(self.clone(), visuals),
-        )
+        ))
     }
 
     impl_settings!("Waveform Settings", ui, this, {

@@ -1,13 +1,15 @@
 use crate::egui_tools::EguiRenderer;
-use egui_wgpu::wgpu::SurfaceError;
-use egui_wgpu::{wgpu, ScreenDescriptor};
-use std::sync::Arc;
+use eframe::wgpu::TextureView;
 use egui::{Context, IconData};
+use egui_wgpu::wgpu::SurfaceError;
+use egui_wgpu::{ScreenDescriptor, wgpu};
+use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
+use crate::ui::visualizer::visualizer_widget::RenderArgs;
 
 pub struct AppState {
     pub device: wgpu::Device,
@@ -38,15 +40,13 @@ impl AppState {
 
         let features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: None,
-                    required_features: features,
-                    required_limits: Default::default(),
-                    memory_hints: Default::default(),
-                    trace: Default::default()
-                }
-            )
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: features,
+                required_limits: Default::default(),
+                memory_hints: Default::default(),
+                trace: Default::default(),
+            })
             .await
             .expect("Failed to create device");
 
@@ -107,6 +107,12 @@ pub trait AppHandler {
     fn update(&mut self, ctx: &Context);
 
     fn save(&mut self, storage: &mut dyn eframe::Storage);
+
+    #[allow(clippy::too_many_arguments)] // sybau
+    fn post_egui(
+        &mut self,
+        args: RenderArgs,
+    );
 }
 
 impl App {
@@ -117,7 +123,7 @@ impl App {
             state: None,
             window: None,
             _icon_data: icon,
-            handler
+            handler,
         }
     }
 
@@ -140,7 +146,7 @@ impl App {
             initial_width,
             initial_width,
         )
-            .await;
+        .await;
 
         self.window.get_or_insert(window);
         self.state.get_or_insert(state);
@@ -156,10 +162,11 @@ impl App {
         // Attempt to handle minimizing window
         if let Some(window) = self.window.as_ref()
             && let Some(min) = window.is_minimized()
-                && min {
-                    println!("Window is minimized");
-                    return;
-                }
+            && min
+        {
+            println!("Window is minimized");
+            return;
+        }
 
         let state = self.state.as_mut().unwrap();
 
@@ -208,7 +215,20 @@ impl App {
                 &mut encoder,
                 window,
                 &surface_view,
-                screen_descriptor,
+                &screen_descriptor,
+            );
+
+            let callback_resources = &state.egui_renderer.renderer.callback_resources;
+            self.handler.post_egui(
+                RenderArgs {
+                    encoder: &mut encoder,
+                    window,
+                    queue: &state.queue,
+                    device: &state.device,
+                    resources: callback_resources,
+                    window_surface_view: &surface_view,
+                    screen_descriptor: &screen_descriptor,
+                }
             );
         }
 

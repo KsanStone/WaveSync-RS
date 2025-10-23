@@ -1,13 +1,13 @@
-use std::env;
-use egui::IconData;
-use winit::event_loop::{ControlFlow, EventLoop};
 use crate::app::App;
 use crate::wavesync::{WaveSync, WaveSyncAppData};
+use egui::IconData;
+use std::env;
+use winit::event_loop::{ControlFlow, EventLoop};
 
+pub mod app;
+pub mod egui_tools;
 pub mod sound;
 pub mod ui;
-pub mod egui_tools;
-pub mod app;
 pub mod wavesync;
 
 fn main() {
@@ -38,7 +38,10 @@ async fn run() {
 
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    let mut app = App::new(icon_data, Box::new(WaveSync::new(WaveSyncAppData::default())));
+    let mut app = App::new(
+        icon_data,
+        Box::new(WaveSync::new(WaveSyncAppData::default())),
+    );
 
     event_loop.run_app(&mut app).expect("Failed to run app");
 }
