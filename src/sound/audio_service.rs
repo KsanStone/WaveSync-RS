@@ -2,7 +2,7 @@ use crate::sound::capture_source::CaptureSource;
 use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
-use crate::stable_num;
+use crate::wavesync::stable_num;
 use circular_buffer::CircularBuffer;
 use eframe::egui::RichText;
 use log::info;
@@ -22,6 +22,12 @@ impl Deref for AudioService {
     type Target = Inner;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Default for AudioService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

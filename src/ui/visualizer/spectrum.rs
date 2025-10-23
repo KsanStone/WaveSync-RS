@@ -1,4 +1,4 @@
-use crate::egui::Ui;
+use egui::Ui;
 use crate::sound::audio_service::AudioService;
 use crate::sound::smoothing::FloatArraySmoother;
 use crate::sound::smoothing::exponential_falloff_smoother::ExponentialFalloffSmoother;
@@ -8,8 +8,9 @@ use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
 use crate::{
-    WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings,
+    create_shader, define_resource, deref_arc, impl_settings,
 };
+use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 use eframe::egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::util::DeviceExt;
 use eframe::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};

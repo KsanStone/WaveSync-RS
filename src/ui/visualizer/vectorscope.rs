@@ -3,7 +3,7 @@ use crate::sound::audio_service::AudioService;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, FULL_SCREEN_QUAD};
-use crate::{WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc};
+use crate::{WaveSyncAppData, create_shader, define_resource, deref_arc};
 use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::{
     BufferAddress, CommandBuffer, CommandEncoder, Device, PrimitiveTopology, Queue, RenderPass,
@@ -15,6 +15,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 use eframe::wgpu::util::DeviceExt;
 use log::warn;
+use crate::wavesync::WaveSyncVisuals;
 
 const MAX_LINE_SEGMENTS: usize = 1000;
 

@@ -1,5 +1,5 @@
-use crate::egui::Ui;
-use crate::egui;
+use egui::Ui;
+use egui;
 use crate::sound::audio_service::{AudioService, CHANNELS};
 use crate::sound::{AudioChannel, scale_to_db};
 use crate::ui::gradient::{Gradient, Stop};
@@ -10,7 +10,7 @@ use crate::ui::{
     create_pipeline, create_texture, write_1d_texture, write_2d_texture_row,
 };
 use crate::{
-    WaveSyncAppData, WaveSyncVisuals, create_shader, define_resource, deref_arc, impl_settings,
+    create_shader, define_resource, deref_arc, impl_settings,
 };
 use circular_buffer::CircularBuffer;
 use eframe::egui::{ComboBox, PaintCallback, PaintCallbackInfo, Rect};
@@ -22,11 +22,12 @@ use eframe::wgpu::{
     Queue, RenderPass,
 };
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use log::{info, warn};
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 
 /// This does not need to be too large, texture sampling will do the rest.
 const GRADIENT_LOOKUP_LENGTH: u32 = 1024;

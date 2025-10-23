@@ -3999,14 +3999,18 @@ dependencies = [
  "circular-buffer",
  "cpal",
  "eframe",
+ "egui",
  "egui-phosphor",
  "egui-wgpu",
+ "egui-winit",
  "egui_extras",
  "env_logger",
  "image",
  "log",
+ "pollster",
  "rustfft",
  "serde",
+ "winit",
 ]
 
 [[package]]

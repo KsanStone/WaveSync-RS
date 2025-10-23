@@ -15,6 +15,12 @@ pub struct DummyAudioBackend {
     pub sequencer_frequency: Arc<Mutex<f32>>,
 }
 
+impl Default for DummyAudioBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DummyAudioBackend {
     pub fn new() -> Self {
         DummyAudioBackend {

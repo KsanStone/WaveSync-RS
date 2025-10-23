@@ -1,10 +1,10 @@
-use crate::egui::Ui;
+use egui::Ui;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
-use crate::{WaveSyncAppData, WaveSyncVisuals, define_resource, deref_arc, impl_settings};
+use crate::{ define_resource, deref_arc, impl_settings};
 use eframe::egui::{PaintCallback, Rect, Slider};
 use eframe::epaint::PaintCallbackInfo;
 use eframe::wgpu::util::DeviceExt;
@@ -16,6 +16,7 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
+use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 
 const MAX_LINE_SEGMENTS: usize = 1000;
 const PIXELS_PER_WAVE: u64 = 200;

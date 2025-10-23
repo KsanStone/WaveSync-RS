@@ -1,4 +1,4 @@
-use crate::WaveSyncVisuals;
+use crate::wavesync::WaveSyncVisuals;
 use crate::ui::plot::{Plot, PlotData};
 use eframe::egui::{Pos2, Rect, Response, Ui, Widget};
 use eframe::{egui, epaint};

@@ -51,6 +51,12 @@ macro_rules! impl_stream_methods {
     };
 }
 
+impl Default for CpalAudioBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CpalAudioBackend {
     pub fn new() -> Self {
         Self::new_with_host(cpal::default_host())

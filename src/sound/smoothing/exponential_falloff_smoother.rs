@@ -6,6 +6,12 @@ pub struct ExponentialFalloffSmoother {
     falloff_speed: Vec<f32>,
 }
 
+impl Default for ExponentialFalloffSmoother {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExponentialFalloffSmoother {
     pub fn new() -> Self {
         Self {
