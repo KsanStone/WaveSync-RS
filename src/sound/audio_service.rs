@@ -12,6 +12,7 @@ use rustfft::num_complex::Complex;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use crate::sound::dummy_audio_backend::DummyAudioBackend;
 
 pub const CHANNELS: usize = 3;
 
@@ -36,7 +37,7 @@ impl AudioService {
         let mut planner = FftPlanner::new();
 
         AudioService(Arc::new(Inner {
-            audio_backend: Mutex::new(Box::new(CpalAudioBackend::new())),
+            audio_backend: Mutex::new(Box::new(DummyAudioBackend::new())),
             audio_buffer: Mutex::new(std::array::from_fn(|_| CircularBuffer::boxed())),
             latest_fft: Mutex::new(std::array::from_fn(|_| vec![])),
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),

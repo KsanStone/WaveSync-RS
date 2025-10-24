@@ -1,5 +1,8 @@
 use eframe::wgpu;
-use eframe::wgpu::{BindGroup, BindGroupLayout, Device};
+use eframe::wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
+use egui::Rect;
+use egui_wgpu::ScreenDescriptor;
+use crate::ui::visualizer::visualizer_widget::RenderArgs;
 
 pub mod gradient;
 pub mod plot;
@@ -90,6 +93,7 @@ fn create_pipeline(
         buffers,
         name,
         wgpu::TextureFormat::Bgra8Unorm,
+        BlendState::ALPHA_BLENDING,
     )
 }
 
@@ -101,6 +105,7 @@ fn create_pipeline_color(
     buffers: &[wgpu::VertexBufferLayout<'_>],
     name: &'static str,
     target_format: wgpu::TextureFormat,
+    blend: BlendState,
 ) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(name),
@@ -117,7 +122,7 @@ fn create_pipeline_color(
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: target_format,
-                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                blend: Some(blend),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -305,4 +310,15 @@ pub fn write_2d_texture_row(
     };
 
     queue.write_texture(texture_copy, row_bytes, data_layout, copy_size);
+}
+
+pub fn viewport(rect: Rect, screen_descriptor: &ScreenDescriptor, pass: &mut RenderPass) {
+    pass.set_viewport(
+        rect.min.x * screen_descriptor.pixels_per_point,
+        rect.min.y * screen_descriptor.pixels_per_point,
+        rect.width() * screen_descriptor.pixels_per_point,
+        rect.height() * screen_descriptor.pixels_per_point,
+        0.0,
+        1.0,
+    );
 }

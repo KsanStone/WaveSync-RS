@@ -2,7 +2,10 @@ use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::{PostEquiRender, RenderArgs, Visualizer};
-use crate::ui::{FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, create_pipeline, create_pipeline_color, uniform_bindings};
+use crate::ui::{
+    FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, create_pipeline, create_pipeline_color,
+    uniform_bindings, viewport,
+};
 use crate::wavesync::WaveSyncVisuals;
 use crate::{WaveSyncAppData, create_shader, define_resource, deref_arc};
 use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
@@ -14,7 +17,7 @@ use eframe::wgpu::{
 use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::warn;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, RwLock};
 
 const MAX_LINE_SEGMENTS: usize = 1000;
@@ -25,6 +28,7 @@ pub struct Inner {
     audio_service: AudioService,
     settings_open: AtomicBool,
     data: Arc<RwLock<WaveSyncAppData>>,
+    last_written: AtomicU64
 }
 
 impl VectorscopeVisualizer {
@@ -33,6 +37,7 @@ impl VectorscopeVisualizer {
             audio_service,
             settings_open: Default::default(),
             data,
+            last_written: Default::default(),
         }))
     }
 }
@@ -90,8 +95,11 @@ define_resource!(VectorscopeIntensityTexture, wgpu::Texture);
 define_resource!(VectorscopeIntensityTextureView, wgpu::TextureView);
 define_resource!(VectorscopeQuadBuffer, wgpu::Buffer);
 define_resource!(VectorscopeUniformBuffer, wgpu::Buffer);
-define_resource!(VectorscopeBindGroup, wgpu::BindGroup);
+define_resource!(VectorscopeBlitBindGroup, wgpu::BindGroup);
 define_resource!(VectorscopeLineBindGroup, wgpu::BindGroup);
+define_resource!(VectorscopeComputeBindGroup, wgpu::BindGroup);
+define_resource!(VectorscopeDecayPipeline, wgpu::ComputePipeline);
+define_resource!(VectorscopeVertexInstanceBuffer, wgpu::Buffer);
 
 impl CallbackTrait for VectorscopeVisualizerCallback {
     fn prepare(
@@ -102,9 +110,15 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         _egui_encoder: &mut CommandEncoder,
         resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
-        if resources.get::<VectorscopeLinePipeline>().is_none() {
-            let width = self.rect.width() as u32;
-            let height = self.rect.height() as u32;
+        let mut re_size = false;
+        let width = self.rect.width() as u32;
+        let height = self.rect.height() as u32;
+
+        if let Some(tx) = resources.get::<VectorscopeIntensityTexture>() {
+            re_size = tx.width() != width || tx.height() != height;
+        }
+
+        if resources.get::<VectorscopeLinePipeline>().is_none() || re_size {
             resources.insert(queue.clone());
 
             let line_snatch_shader =
@@ -113,9 +127,18 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
             let line_blit_shader =
                 create_shader!(device, "lblit", "../../../shader/vectorscope_blit.wgsl");
 
+            let decay_shader = create_shader!(device, "decay", "../../../shader/decay.wgsl");
+
             let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("vectorscope_vertex_buffer"),
-                size: ((MAX_LINE_SEGMENTS + 1) * size_of::<f32>() * 2) as BufferAddress,
+                size: ((MAX_LINE_SEGMENTS * 2) * size_of::<f32>() * 2) as BufferAddress,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let vertex_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("vectorscope_vertex_instance_buffer"),
+                size: ((MAX_LINE_SEGMENTS) * size_of::<f32>()) as BufferAddress,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -152,11 +175,6 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
             };
             let tex = device.create_texture(&aux_tex_desc);
             let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            let bind_ty = wgpu::BindingType::StorageTexture {
-                access: StorageTextureAccess::ReadOnly,
-                format: TextureFormat::R32Float,
-                view_dimension: TextureViewDimension::D2,
-            };
 
             let bind_group_layout =
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -164,7 +182,11 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                         wgpu::BindGroupLayoutEntry {
                             binding: 0,
                             visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: bind_ty,
+                            ty: wgpu::BindingType::StorageTexture {
+                                access: StorageTextureAccess::ReadOnly,
+                                format: TextureFormat::R32Float,
+                                view_dimension: TextureViewDimension::D2,
+                            },
                             count: None,
                         },
                         wgpu::BindGroupLayoutEntry {
@@ -196,7 +218,50 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                 ],
             });
 
-            let (line_bind_group_layout, line_bind_group) = uniform_bindings(device, 0, &uniform_buffer, "line uniforms");
+            let compute_bind_group_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::StorageTexture {
+                                access: StorageTextureAccess::ReadWrite,
+                                format: TextureFormat::R32Float,
+                                view_dimension: TextureViewDimension::D2,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                    label: Some("vectorscope_compute_layout"),
+                });
+
+            let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("vectorscope_compute_bind_group"),
+                layout: &compute_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&tex_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+
+            let (line_bind_group_layout, line_bind_group) =
+                uniform_bindings(device, 0, &uniform_buffer, "line uniforms");
 
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("vectorscope layout"),
@@ -204,27 +269,66 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                 push_constant_ranges: &[],
             });
 
-            let line_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("vectorscope layout 2"),
-                bind_group_layouts: &[&line_bind_group_layout],
-                push_constant_ranges: &[],
-            });
+            let line_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("vectorscope layout 2"),
+                    bind_group_layouts: &[&line_bind_group_layout],
+                    push_constant_ranges: &[],
+                });
 
+            let compute_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Compute Pipeline Layout"),
+                    bind_group_layouts: &[&compute_bind_group_layout],
+                    push_constant_ranges: &[],
+                });
+
+            let compute_pipeline =
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Multiply Pipeline"),
+                    layout: Some(&compute_pipeline_layout),
+                    module: &decay_shader,
+                    entry_point: Some("cs_main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+
+            resources.insert(VectorscopeVertexInstanceBuffer(vertex_instance_buffer));
+            resources.insert(VectorscopeDecayPipeline(compute_pipeline));
+            resources.insert(VectorscopeComputeBindGroup(compute_bind_group));
             resources.insert(VectorscopeLineBindGroup(line_bind_group));
             resources.insert(VectorscopeIntensityTextureView(tex_view));
             resources.insert(VectorscopeIntensityTexture(tex));
             resources.insert(VectorscopeUniformBuffer(uniform_buffer));
             resources.insert(VectorscopeVertexBuffer(vertex_buffer));
-            resources.insert(VectorscopeBindGroup(bind_group));
+            resources.insert(VectorscopeBlitBindGroup(bind_group));
             resources.insert(VectorscopeQuadBuffer(quad_buffer));
             resources.insert(VectorscopeLinePipeline(create_pipeline_color(
                 device,
                 &line_snatch_shader,
                 &line_pipeline_layout,
-                PrimitiveTopology::LineStrip,
-                &[VERTEX_2D_BUFFER_LAYOUT],
+                PrimitiveTopology::LineList,
+                &[VERTEX_2D_BUFFER_LAYOUT, wgpu::VertexBufferLayout {
+                    array_stride: size_of::<f32>() as BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            offset: 0,
+                            shader_location: 1,
+                            format: wgpu::VertexFormat::Float32,
+                        },
+                    ],
+                },],
                 "vectorscope_line_pipeline",
                 TextureFormat::R32Float,
+                wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent::REPLACE,
+                }
             )));
             resources.insert(VectorscopeBlitPipeline(create_pipeline(
                 device,
@@ -246,17 +350,6 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
     ) {
         // Noop, we'll do the actual rendering in the post egui render pass,
         // as we require additional render-passes to do the render.
-
-        // let blit_pipeline = _callback_resources
-        //     .get::<VectorscopeBlitPipeline>()
-        //     .unwrap();
-        // let quad_buffer = _callback_resources.get::<VectorscopeQuadBuffer>().unwrap();
-        // let bind_group = _callback_resources.get::<VectorscopeBindGroup>().unwrap();
-        //
-        // _render_pass.set_pipeline(blit_pipeline);
-        // _render_pass.set_bind_group(0, &bind_group.0, &[]);
-        // _render_pass.set_vertex_buffer(0, quad_buffer.slice(..));
-        // _render_pass.draw(0..6, 0..1);
     }
 }
 
@@ -266,16 +359,46 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
         let blit_pipeline = args.resources.get::<VectorscopeBlitPipeline>().unwrap();
         let quad_buffer = args.resources.get::<VectorscopeQuadBuffer>().unwrap();
         let vertex_buffer = args.resources.get::<VectorscopeVertexBuffer>().unwrap();
+        let decay_pipeline = args.resources.get::<VectorscopeDecayPipeline>().unwrap();
+        let decay_bind_group = args.resources.get::<VectorscopeComputeBindGroup>().unwrap();
         let intensity_texture = args.resources.get::<VectorscopeIntensityTexture>().unwrap();
         let line_bind_group = args.resources.get::<VectorscopeLineBindGroup>().unwrap();
+        let vertex_instance_buffer = args.resources.get::<VectorscopeVertexInstanceBuffer>().unwrap();
         let texture_view = args
             .resources
             .get::<VectorscopeIntensityTextureView>()
             .unwrap();
         let uniform_buffer = args.resources.get::<VectorscopeUniformBuffer>().unwrap();
-        let bind_group = args.resources.get::<VectorscopeBindGroup>().unwrap();
+        let bind_group = args.resources.get::<VectorscopeBlitBindGroup>().unwrap();
         let queue = args.resources.get::<Queue>().unwrap();
         let audio_service = &self.visualizer.audio_service;
+        let last_written = &self.visualizer.last_written;
+
+        queue.write_buffer(
+            uniform_buffer,
+            0,
+            bytemuck::bytes_of(&Uniforms {
+                decay_factor: 0.67,
+                write_factor: 1.0,
+                fill_color: self.color.to_normalized_gamma_f32(),
+                _padding: 0,
+            }),
+        );
+
+        {
+            // Decay :O
+            let mut pass = args
+                .encoder
+                .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Multiply Pass"),
+                    timestamp_writes: None,
+                });
+            let image_width = intensity_texture.width();
+            let image_height = intensity_texture.height();
+            pass.set_pipeline(&decay_pipeline);
+            pass.set_bind_group(0, &decay_bind_group.0, &[]);
+            pass.dispatch_workgroups((image_width + 15) / 16, (image_height + 15) / 16, 1);
+        }
 
         {
             // Draw new lines
@@ -299,42 +422,41 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 return;
             }
 
-            let to_read = 1000;
+            let last = last_written.load(std::sync::atomic::Ordering::Relaxed);
+            let curr = audio_service.get_samples_written();
+            last_written.store(curr, std::sync::atomic::Ordering::Relaxed);
+
+            let to_read = curr.saturating_sub(last).min(MAX_LINE_SEGMENTS as u64) as usize;
             let left_data = audio_service.get_samples(AudioChannel::Left, to_read);
             let right_data = audio_service.get_samples(AudioChannel::Right, to_read);
 
-            if (left_data.len() != to_read) || (right_data.len() != to_read) {
-                warn!("Not enough samples to draw vectorscope");
-                return;
-            }
+            if left_data.len() == to_read && right_data.len() == to_read && to_read > 1 {
+                let mut vertex_data = vec![];
+                let mut lengths = vec![];
+                for i in 0..(to_read - 1) {
+                    vertex_data.push([left_data[i], right_data[i]]);
+                    vertex_data.push([left_data[i + 1], right_data[i + 1]]);
 
-            let mut vertex_data = vec![];
-            for i in 0..to_read {
-                vertex_data.push([left_data[i], right_data[i]]);
-            }
+                    let x = left_data[i + 1] - left_data[i];
+                    let y = right_data[i + 1] - right_data[i];
+                    lengths.push((1.0 / (x*x + y*y).sqrt().max(0.0000001)).min(1.0));
+                }
 
-            queue.write_buffer(
-                uniform_buffer,
-                0,
-                bytemuck::bytes_of(&Uniforms {
-                    decay_factor: 0.96,
-                    write_factor: 1.0,
-                    fill_color: self.color.to_normalized_gamma_f32(),
-                    _padding: 0,
-                }),
-            );
-            queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_data));
-            pass.set_pipeline(line_pipeline);
-            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            pass.set_bind_group(0, &line_bind_group.0, &[]);
-            pass.draw(
-                0..vertex_data.len() as u32,
-                0..(vertex_data.len() as u32 - 1),
-            );
+
+                queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_data));
+                queue.write_buffer(vertex_instance_buffer, 0, bytemuck::cast_slice(&lengths));
+                pass.set_pipeline(line_pipeline);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.set_vertex_buffer(1, vertex_instance_buffer.slice(..));
+                pass.set_bind_group(0, &line_bind_group.0, &[]);
+                pass.draw(
+                    0..vertex_data.len() as u32,
+                    0..(vertex_data.len() as u32 / 2),
+                );
+            }
         }
 
         {
-            println!("Drawing vectorscope");
             // Display the luminosity buffer
             let mut pass = args.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -351,14 +473,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 occlusion_query_set: None,
             });
 
-            pass.set_viewport(
-                self.rect.min.x,
-                self.rect.min.y,
-                self.rect.width(),
-                self.rect.height(),
-                0.0,
-                1.0,
-            );
+            viewport(self.rect, &args.screen_descriptor, &mut pass);
 
             pass.set_pipeline(blit_pipeline);
             pass.set_bind_group(0, &bind_group.0, &[]);

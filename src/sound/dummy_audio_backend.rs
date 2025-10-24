@@ -5,6 +5,8 @@ use crate::sound::{AudioBackendType, SampleFormat};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use rand::Rng;
+use rand::rngs::ThreadRng;
 
 /// Used for testing purposes, to avoid having to have a real audio device.
 pub struct DummyAudioBackend {
@@ -32,7 +34,7 @@ impl DummyAudioBackend {
             capture_source: CaptureSource {
                 name: "Dummy Capture Source".to_string(),
                 id: "dcs".to_string(),
-                channels: 1,
+                channels: 2,
                 sample_rate: 48000,
                 format: SampleFormat::F32,
                 is_loopback: false,
@@ -77,17 +79,22 @@ impl AudioBackend for DummyAudioBackend {
                 let frequencies = vec![sequencer_frequency];
                 let scalar: f32 = 1.0 / frequencies.len() as f32;
                 if let Some(callback) = callback_weak.upgrade() {
-                    let mut frame = vec![0.0; 960];
-                    for item in &mut frame {
-                        let seq = sequence_index.fetch_add(1, Ordering::Relaxed) as f32
+                    let mut frame_l = vec![0.0; 960];
+                    let mut frame_r = vec![0.0; 960];
+
+                    let phase_offset = rand::rng().random_range(0.495..0.505);
+                    for (l, r) in frame_l.iter_mut().zip(frame_r.iter_mut()) {
+                        let seq_l = sequence_index.fetch_add(1, Ordering::Relaxed) as f32
                             % (100000.0 * 2.0 * std::f32::consts::PI);
                         for freq in &frequencies {
                             let wave_length = 48000.0 / freq;
+                            let phase_offset = wave_length * 2.0 * std::f32::consts::PI * phase_offset;
 
-                            *item += (seq / wave_length * 2.0 * std::f32::consts::PI).sin() * scalar
+                            *l += (seq_l / wave_length * 2.0 * std::f32::consts::PI).sin() * scalar;
+                            *r += ((seq_l + phase_offset) / wave_length * 2.0 * std::f32::consts::PI).sin() * scalar;
                         }
                     }
-                    callback.lock().unwrap()(vec![frame]);
+                    callback.lock().unwrap()(vec![frame_l, frame_r]);
                 } else {
                     break;
                 }

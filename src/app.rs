@@ -1,5 +1,4 @@
 use crate::egui_tools::EguiRenderer;
-use eframe::wgpu::TextureView;
 use egui::{Context, IconData};
 use egui_wgpu::wgpu::SurfaceError;
 use egui_wgpu::{ScreenDescriptor, wgpu};
