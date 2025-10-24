@@ -23,6 +23,8 @@ egui-phosphor = "0.10.0"
 serde = { version = "1.0.225", features = ["derive"] }
 pollster = "0.4.0"
 rand = "0.9.2"
+hound = "3.5.1"
+itertools = "0.14.0"
 
 [profile.dev.package.rustfft]
 opt-level = 3

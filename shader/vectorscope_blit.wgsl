@@ -46,8 +46,7 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
         out_color = mix(col, vec3<f32>(1.0), t);
     }
 
-    let clamped_val = max(min(value, 1.0), 0.0);
-    return vec4<f32>(out_color, clamped_val);
+    return vec4<f32>(out_color, value);
 }
 
 

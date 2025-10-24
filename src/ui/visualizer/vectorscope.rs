@@ -426,7 +426,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
             let curr = audio_service.get_samples_written();
             last_written.store(curr, std::sync::atomic::Ordering::Relaxed);
 
-            let to_read = curr.saturating_sub(last).min(MAX_LINE_SEGMENTS as u64) as usize;
+            let to_read = curr.saturating_sub(last).min(MAX_LINE_SEGMENTS as u64) as usize + 1;
             let left_data = audio_service.get_samples(AudioChannel::Left, to_read);
             let right_data = audio_service.get_samples(AudioChannel::Right, to_read);
 
@@ -437,14 +437,16 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                     vertex_data.push([left_data[i], right_data[i]]);
                     vertex_data.push([left_data[i + 1], right_data[i + 1]]);
 
-                    let x = left_data[i + 1] - left_data[i];
-                    let y = right_data[i + 1] - right_data[i];
-                    lengths.push((1.0 / (x*x + y*y).sqrt().max(0.0000001)).min(1.0));
-                }
+                    let x = (left_data[i + 1] - left_data[i]) * 800.0;
+                    let y = (right_data[i + 1] - right_data[i]) * 800.0;
+                    let dist = (x*x + y*y).sqrt().max(0.001);
 
+                    lengths.push(0.1 / dist);
+                }
 
                 queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_data));
                 queue.write_buffer(vertex_instance_buffer, 0, bytemuck::cast_slice(&lengths));
+
                 pass.set_pipeline(line_pipeline);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 pass.set_vertex_buffer(1, vertex_instance_buffer.slice(..));
