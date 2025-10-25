@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
-const MAX_LINE_SEGMENTS: usize = 1000;
+const MAX_LINE_SEGMENTS: usize = 4096;
 
 deref_arc!(VectorscopeVisualizer);
 
@@ -450,7 +450,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
 
                     let x = (left_data[i + 1] - left_data[i]) * self.rect.width();
                     let y = (right_data[i + 1] - right_data[i]) * self.rect.height();
-                    let mut dist = (x*x + y*y).sqrt().max(0.1);
+                    let mut dist = (x*x + y*y).sqrt().max(0.05);
                     if dist.is_nan() {
                         dist = 0.25;
                     }
