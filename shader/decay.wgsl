@@ -1,9 +1,9 @@
 @group(0) @binding(0) var intensity_tex : texture_storage_2d<r32float, read_write>;
 
 struct Uniforms {
+    fill_color: vec4<f32>,
     decay_factor: f32,
     write_factor: f32,
-    fill_color: vec4<f32>,
 };
 
 @group(0) @binding(1)

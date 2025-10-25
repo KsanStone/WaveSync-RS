@@ -82,9 +82,9 @@ struct VectorscopeVisualizerCallback {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
+    fill_color: [f32; 4],
     decay_factor: f32,
     write_factor: f32,
-    fill_color: [f32; 4],
     _padding: u64,
 }
 
@@ -374,13 +374,20 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
         let audio_service = &self.visualizer.audio_service;
         let last_written = &self.visualizer.last_written;
 
+        let decay: f32 = 0.8;
+
+        let lambda = -decay.ln() * 60.0;
+        let decay_factor = (-lambda * 0.008).exp();
+
+        // println!("{}", decay_factor);
+
         queue.write_buffer(
             uniform_buffer,
             0,
             bytemuck::bytes_of(&Uniforms {
-                decay_factor: 0.67,
-                write_factor: 1.0,
                 fill_color: self.color.to_normalized_gamma_f32(),
+                decay_factor,
+                write_factor: 1.0,
                 _padding: 0,
             }),
         );
@@ -395,9 +402,9 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 });
             let image_width = intensity_texture.width();
             let image_height = intensity_texture.height();
-            pass.set_pipeline(&decay_pipeline);
+            pass.set_pipeline(decay_pipeline);
             pass.set_bind_group(0, &decay_bind_group.0, &[]);
-            pass.dispatch_workgroups((image_width + 15) / 16, (image_height + 15) / 16, 1);
+            pass.dispatch_workgroups(image_width.div_ceil(16), image_height.div_ceil(16), 1);
         }
 
         {
@@ -434,15 +441,22 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 let mut vertex_data = vec![];
                 let mut lengths = vec![];
                 for i in 0..(to_read - 1) {
-                    vertex_data.push([left_data[i], right_data[i]]);
-                    vertex_data.push([left_data[i + 1], right_data[i + 1]]);
+                    vertex_data.push([left_data[i], -right_data[i]]);
+                    vertex_data.push([left_data[i + 1], -right_data[i + 1]]);
 
-                    let x = (left_data[i + 1] - left_data[i]) * 800.0;
-                    let y = (right_data[i + 1] - right_data[i]) * 800.0;
-                    let dist = (x*x + y*y).sqrt().max(0.001);
+                    let x = (left_data[i + 1] - left_data[i]) * self.rect.width();
+                    let y = (right_data[i + 1] - right_data[i]) * self.rect.height();
+                    // let mut dist = (x*x + y*y).sqrt().powf(4.0).max(0.001);
+                    // if dist.is_nan() {
+                    //     dist = 0.25;
+                    // }
 
-                    lengths.push(0.1 / dist);
+                    let dist = 1.0;
+
+                    lengths.push(1.0f32 / dist);
                 }
+
+                // println!("{:?}", lengths);
 
                 queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_data));
                 queue.write_buffer(vertex_instance_buffer, 0, bytemuck::cast_slice(&lengths));
@@ -475,7 +489,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 occlusion_query_set: None,
             });
 
-            viewport(self.rect, &args.screen_descriptor, &mut pass);
+            viewport(self.rect, args.screen_descriptor, &mut pass);
 
             pass.set_pipeline(blit_pipeline);
             pass.set_bind_group(0, &bind_group.0, &[]);
