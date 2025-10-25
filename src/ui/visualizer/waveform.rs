@@ -277,7 +277,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
             render_pass.set_bind_group(0, &bind_group.0, &[]);
             render_pass.set_vertex_buffer(0, buffer.slice(..));
             render_pass.set_pipeline(pipeline);
-            render_pass.draw(0..vertices_written, 0..vertices_written.saturating_sub(1));
+            render_pass.draw(0..vertices_written, 0..1);
         }
     }
 }
