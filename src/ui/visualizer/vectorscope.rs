@@ -18,9 +18,10 @@ use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use log::warn;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Instant;
 
-const MAX_LINE_SEGMENTS: usize = 1000;
+const MAX_LINE_SEGMENTS: usize = 4096;
 
 deref_arc!(VectorscopeVisualizer);
 
@@ -28,7 +29,8 @@ pub struct Inner {
     audio_service: AudioService,
     settings_open: AtomicBool,
     data: Arc<RwLock<WaveSyncAppData>>,
-    last_written: AtomicU64
+    last_written: AtomicU64,
+    last_draw: Mutex<Instant>,
 }
 
 impl VectorscopeVisualizer {
@@ -38,6 +40,7 @@ impl VectorscopeVisualizer {
             settings_open: Default::default(),
             data,
             last_written: Default::default(),
+            last_draw: Mutex::new(Instant::now()),
         }))
     }
 }
@@ -82,9 +85,9 @@ struct VectorscopeVisualizerCallback {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
+    fill_color: [f32; 4],
     decay_factor: f32,
     write_factor: f32,
-    fill_color: [f32; 4],
     _padding: u64,
 }
 
@@ -138,7 +141,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
 
             let vertex_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("vectorscope_vertex_instance_buffer"),
-                size: ((MAX_LINE_SEGMENTS) * size_of::<f32>()) as BufferAddress,
+                size: ((MAX_LINE_SEGMENTS * 2) * size_of::<f32>()) as BufferAddress,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -310,7 +313,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                 PrimitiveTopology::LineList,
                 &[VERTEX_2D_BUFFER_LAYOUT, wgpu::VertexBufferLayout {
                     array_stride: size_of::<f32>() as BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Instance,
+                    step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
                         wgpu::VertexAttribute {
                             offset: 0,
@@ -373,14 +376,22 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
         let queue = args.resources.get::<Queue>().unwrap();
         let audio_service = &self.visualizer.audio_service;
         let last_written = &self.visualizer.last_written;
+        let mut last = self.visualizer.last_draw.lock().unwrap();
+        let delta_t = last.elapsed().as_secs_f32().clamp(0.00001, 1.0);
+        *last = Instant::now();
+
+        let decay: f32 = 0.8;
+
+        let lambda = -decay.ln() * 60.0;
+        let decay_factor = (-lambda * delta_t).exp();
 
         queue.write_buffer(
             uniform_buffer,
             0,
             bytemuck::bytes_of(&Uniforms {
-                decay_factor: 0.67,
-                write_factor: 1.0,
                 fill_color: self.color.to_normalized_gamma_f32(),
+                decay_factor,
+                write_factor: 1.0,
                 _padding: 0,
             }),
         );
@@ -395,9 +406,9 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 });
             let image_width = intensity_texture.width();
             let image_height = intensity_texture.height();
-            pass.set_pipeline(&decay_pipeline);
+            pass.set_pipeline(decay_pipeline);
             pass.set_bind_group(0, &decay_bind_group.0, &[]);
-            pass.dispatch_workgroups((image_width + 15) / 16, (image_height + 15) / 16, 1);
+            pass.dispatch_workgroups(image_width.div_ceil(16), image_height.div_ceil(16), 1);
         }
 
         {
@@ -426,7 +437,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
             let curr = audio_service.get_samples_written();
             last_written.store(curr, std::sync::atomic::Ordering::Relaxed);
 
-            let to_read = curr.saturating_sub(last).min(MAX_LINE_SEGMENTS as u64) as usize;
+            let to_read = curr.saturating_sub(last).min(MAX_LINE_SEGMENTS as u64) as usize + 1;
             let left_data = audio_service.get_samples(AudioChannel::Left, to_read);
             let right_data = audio_service.get_samples(AudioChannel::Right, to_read);
 
@@ -434,25 +445,28 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 let mut vertex_data = vec![];
                 let mut lengths = vec![];
                 for i in 0..(to_read - 1) {
-                    vertex_data.push([left_data[i], right_data[i]]);
-                    vertex_data.push([left_data[i + 1], right_data[i + 1]]);
+                    vertex_data.push([left_data[i], -right_data[i]]);
+                    vertex_data.push([left_data[i + 1], -right_data[i + 1]]);
 
-                    let x = left_data[i + 1] - left_data[i];
-                    let y = right_data[i + 1] - right_data[i];
-                    lengths.push((1.0 / (x*x + y*y).sqrt().max(0.0000001)).min(1.0));
+                    let x = (left_data[i + 1] - left_data[i]) * self.rect.width();
+                    let y = (right_data[i + 1] - right_data[i]) * self.rect.height();
+                    let mut dist = (x*x + y*y).sqrt().max(0.05);
+                    if dist.is_nan() {
+                        dist = 0.25;
+                    }
+
+                    lengths.push(1.0f32 / dist); //vert 1
+                    lengths.push(1.0f32 / dist); //vert 2
                 }
-
 
                 queue.write_buffer(vertex_buffer, 0, bytemuck::cast_slice(&vertex_data));
                 queue.write_buffer(vertex_instance_buffer, 0, bytemuck::cast_slice(&lengths));
+
                 pass.set_pipeline(line_pipeline);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 pass.set_vertex_buffer(1, vertex_instance_buffer.slice(..));
                 pass.set_bind_group(0, &line_bind_group.0, &[]);
-                pass.draw(
-                    0..vertex_data.len() as u32,
-                    0..(vertex_data.len() as u32 / 2),
-                );
+                pass.draw(0..vertex_data.len() as u32, 0..1);
             }
         }
 
@@ -473,7 +487,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 occlusion_query_set: None,
             });
 
-            viewport(self.rect, &args.screen_descriptor, &mut pass);
+            viewport(self.rect, args.screen_descriptor, &mut pass);
 
             pass.set_pipeline(blit_pipeline);
             pass.set_bind_group(0, &bind_group.0, &[]);

@@ -151,7 +151,7 @@ impl AppHandler for WaveSync {
                         .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>(
                     ) {
                         let mut sequencer_frequency =
-                            dummy_backend.sequencer_frequency.lock().unwrap();
+                            dummy_backend.pattern_data.sequencer_frequency.lock().unwrap();
                         egui::Slider::new(
                             &mut *sequencer_frequency,
                             RangeInclusive::from(egui::Rangef::new(20.0, 1000.0)),

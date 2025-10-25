@@ -503,7 +503,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             render_pass.set_vertex_buffer(0, instance_buffer.slice(..));
             render_pass.set_pipeline(line_pipeline);
-            render_pass.draw(0..(bars_drawn - 1) * 2u32, 0..(bars_drawn - 1));
+            render_pass.draw(0..(bars_drawn - 1) * 2u32, 0..1);
         } else {
             queue.write_buffer(instance_buffer, 0, bytemuck::cast_slice(&instance_data));
             render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));

@@ -163,7 +163,6 @@ impl App {
             && let Some(min) = window.is_minimized()
             && min
         {
-            println!("Window is minimized");
             return;
         }
 
