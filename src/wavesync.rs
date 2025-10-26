@@ -62,6 +62,14 @@ impl WaveSyncVisuals {
     pub fn color_end(&self) -> Color32 {
         self.theme.blue
     }
+
+    pub fn plot_grid(&self) -> Color32 {
+        self.theme.surface0
+    }
+
+    pub fn plot_grid_2(&self) -> Color32 {
+        self.theme.surface2
+    }
 }
 
 impl WaveSync {

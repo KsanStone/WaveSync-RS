@@ -7,6 +7,7 @@ const PLOT_DIGITS: usize = 2;
 const X_AXIS_WIDTH: i8 = 20;
 const Y_AXIS_WIDTH: i8 = 30;
 const TICK_SIZE: f32 = 4.0;
+const FONT_SIZE: f32 = 9.0;
 
 #[derive(Clone)]
 pub struct PlotData {
@@ -23,12 +24,14 @@ impl Default for PlotData {
                 min: 0.0,
                 max: 100.0,
                 logarithmic: false,
+                always_show_zero: false,
             },
             x_axis_shown: true,
             y_axis: Axis {
                 min: 0.0,
                 max: 100.0,
                 logarithmic: false,
+                always_show_zero: false,
             },
             y_axis_shown: true,
         }
@@ -63,6 +66,7 @@ pub struct Axis {
     pub min: f32,
     pub max: f32,
     pub logarithmic: bool,
+    pub always_show_zero: bool,
 }
 
 pub struct AxisTicks {
@@ -76,6 +80,7 @@ impl Axis {
             min,
             max,
             logarithmic: false,
+            always_show_zero: false,
         }
     }
 
@@ -84,7 +89,13 @@ impl Axis {
             min,
             max,
             logarithmic: true,
+            always_show_zero: false,
         }
+    }
+
+    pub fn always_show_zero(mut self, show: bool) -> Self {
+        self.always_show_zero = show;
+        self
     }
 
     pub fn log_lower_bound(&self) -> f32 {
@@ -107,24 +118,34 @@ impl Axis {
 
         if !self.logarithmic {
             const LABEL_SPACING_PX: f32 = 60.0;
-            let labels = (px_size / LABEL_SPACING_PX + 1.0).max(2.0).floor();
+            let include_zero = self.always_show_zero && self.min < 0.0 && self.max > 0.0;
+
+            let mut labels = (px_size / LABEL_SPACING_PX + 1.0).max(2.0).floor();
+            if include_zero && labels as u32 % 2 == 0 {
+                labels += 1.0;
+            }
             let step = (self.max - self.min) / (labels - 1.0);
             let minor_step = step / (MINOR_TICK_COUNT as f32 + 1.0);
 
             let mut pos = self.min;
-
             for i in 0..labels as usize {
                 major_ticks.push(pos);
-                let mut tmp_pos = pos;
-
                 if i + 1 != labels as usize {
+                    let mut tmp = pos;
                     for _ in 0..MINOR_TICK_COUNT {
-                        tmp_pos += minor_step;
-                        minor_ticks.push(tmp_pos);
+                        tmp += minor_step;
+                        minor_ticks.push(tmp);
                     }
                 }
-
                 pos += step;
+            }
+
+            // Ensure endpoints
+            if *major_ticks.first().unwrap() != self.min {
+                major_ticks.insert(0, self.min);
+            }
+            if *major_ticks.last().unwrap() != self.max {
+                major_ticks.push(self.max);
             }
         } else {
             let mut i = 0.0;
@@ -205,6 +226,7 @@ pub struct Plot<'a> {
     plot_data: &'a mut PlotData,
     grid_color: Color32,
     label_color: Color32,
+    zero_line_color: Color32,
 }
 
 impl<'a> Plot<'a> {
@@ -213,6 +235,7 @@ impl<'a> Plot<'a> {
             plot_data: data,
             grid_color: Color32::from_gray(50),
             label_color: Color32::from_gray(200),
+            zero_line_color: Color32::from_gray(255),
         }
     }
 
@@ -223,6 +246,11 @@ impl<'a> Plot<'a> {
 
     pub fn set_label_color(mut self, color: Color32) -> Self {
         self.label_color = color;
+        self
+    }
+
+    pub fn set_zero_line_color(mut self, color: Color32) -> Self {
+        self.zero_line_color = color;
         self
     }
 
@@ -280,6 +308,23 @@ impl<'a> Plot<'a> {
                     (1.0, self.grid_color),
                 );
             }
+
+            if self.plot_data.x_axis.always_show_zero
+                && self.plot_data.x_axis.min < 0.0
+                && self.plot_data.x_axis.max > 0.0
+            {
+                let px_pos =
+                    self.plot_data
+                        .x_axis
+                        .val_to_pos(0.0, content_rect.min.x, content_rect.max.x);
+                painter.line_segment(
+                    [
+                        Pos2::new(px_pos, content_rect.min.y),
+                        Pos2::new(px_pos, content_rect.max.y),
+                    ],
+                    (1.0, self.zero_line_color),
+                );
+            }
         }
 
         if self.plot_data.y_axis_shown {
@@ -315,6 +360,23 @@ impl<'a> Plot<'a> {
                         Pos2::new(content_rect.min.x - TICK_SIZE, px_pos),
                     ],
                     (1.0, self.grid_color),
+                );
+            }
+
+            if self.plot_data.y_axis.always_show_zero
+                && self.plot_data.y_axis.min < 0.0
+                && self.plot_data.y_axis.max > 0.0
+            {
+                let px_pos =
+                    self.plot_data
+                        .y_axis
+                        .val_to_pos(0.0, content_rect.max.y, content_rect.min.y);
+                painter.line_segment(
+                    [
+                        Pos2::new(content_rect.min.x, px_pos),
+                        Pos2::new(content_rect.max.x, px_pos),
+                    ],
+                    (1.0, self.zero_line_color),
                 );
             }
         }

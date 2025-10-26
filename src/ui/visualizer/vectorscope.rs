@@ -1,13 +1,13 @@
-use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
+use crate::sound::AudioChannel;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::{PostEquiRender, RenderArgs, Visualizer};
 use crate::ui::{
-    FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, create_pipeline, create_pipeline_color,
-    uniform_bindings, viewport,
+    create_pipeline, create_pipeline_color, uniform_bindings, viewport,
+    FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT,
 };
 use crate::wavesync::WaveSyncVisuals;
-use crate::{WaveSyncAppData, create_shader, define_resource, deref_arc};
+use crate::{create_shader, define_resource, deref_arc, WaveSyncAppData};
 use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
 use eframe::wgpu::util::DeviceExt;
 use eframe::wgpu::{
@@ -16,7 +16,6 @@ use eframe::wgpu::{
 };
 use eframe::{egui, wgpu};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use log::warn;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -47,9 +46,17 @@ impl VectorscopeVisualizer {
 
 impl Visualizer for VectorscopeVisualizer {
     fn get_plot_data(&self) -> PlotData {
-        let x_axis = Axis::linear(-1.0, 1.0);
-        let y_axis = Axis::linear(-1.0, 1.0);
+        let x_axis = Axis::linear(-1.0, 1.0).always_show_zero(true);
+        let y_axis = Axis::linear(-1.0, 1.0).always_show_zero(true);
         PlotData::from_axis(x_axis, y_axis)
+    }
+
+    fn error_message(&self) -> Option<String> {
+        if self.audio_service.get_active_audio_channels() < 2 {
+            Some("Vectorscope requires at least 2 channels".into())
+        } else {
+            None
+        }
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
@@ -358,6 +365,10 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
 
 impl PostEquiRender for VectorscopeVisualizerCallback {
     fn post_egui_render(&self, args: &mut RenderArgs) {
+        if args.resources.get::<VectorscopeLinePipeline>().is_none() {
+            return;
+        }
+
         let line_pipeline = args.resources.get::<VectorscopeLinePipeline>().unwrap();
         let blit_pipeline = args.resources.get::<VectorscopeBlitPipeline>().unwrap();
         let quad_buffer = args.resources.get::<VectorscopeQuadBuffer>().unwrap();
@@ -429,7 +440,6 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
             });
 
             if audio_service.get_active_audio_channels() < 2 {
-                warn!("Not enough audio channels to draw vectorscope");
                 return;
             }
 

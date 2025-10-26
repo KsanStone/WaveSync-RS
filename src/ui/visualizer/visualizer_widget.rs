@@ -4,6 +4,8 @@ use crate::wavesync::WaveSyncVisuals;
 use eframe::egui::{Pos2, Rect, Response, Ui, Widget};
 use eframe::wgpu::{CommandEncoder, Device, Queue, TextureView};
 use eframe::{egui, epaint};
+use eframe::emath::Align2;
+use egui::FontId;
 use egui_wgpu::{CallbackResources, ScreenDescriptor};
 use winit::window::Window;
 
@@ -21,6 +23,15 @@ pub trait Visualizer: Send + Sync + 'static {
     fn get_plot_data(&self) -> PlotData;
 
     fn accept_fft(&self, _fft_data: &[Vec<f32>; CHANNELS], _fft_size: usize) {}
+
+    /// If the visualizer is not able to function,
+    /// for reasons such as there being not enough audio channels,
+    /// it should return a message.
+    ///
+    /// If the message is returned, any drawing is skipped for the frame.
+    fn error_message(&self) -> Option<String> {
+        None
+    }
 
     fn get_draw_callback(
         &self,
@@ -73,14 +84,20 @@ impl<'a> Widget for VisualizerWidget<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
         let mut plot_data = self.visualizer.get_plot_data();
         let plot = Plot::new(&mut plot_data)
-            .set_grid_color(ui.visuals().faint_bg_color)
-            .set_label_color(ui.visuals().text_color());
+            .set_grid_color(self.wavesync_visuals.plot_grid())
+            .set_label_color(ui.visuals().text_color())
+            .set_zero_line_color(self.wavesync_visuals.plot_grid_2());
         let content_rect = plot.show(ui);
-        if let Some(callback) = self
-            .visualizer
-            .get_draw_callback(content_rect, self.wavesync_visuals)
-        {
-            ui.painter().add(callback);
+
+        if let Some(err_message) = self.visualizer.error_message() {
+            ui.painter().text(content_rect.center(), Align2::CENTER_CENTER, err_message, FontId::default(), ui.visuals().text_color());
+        } else {
+            if let Some(callback) = self
+                .visualizer
+                .get_draw_callback(content_rect, self.wavesync_visuals)
+            {
+                ui.painter().add(callback);
+            }
         }
 
         self.cached_rect.clone_from(&content_rect);

@@ -57,7 +57,7 @@ impl WaveformVisualizer {
             audio_service,
             channel,
             plot_data: Mutex::new(
-                PlotData::from_axis(Axis::linear(0.0, 1.0), Axis::linear(-1.0, 1.0))
+                PlotData::from_axis(Axis::linear(0.0, 1.0), Axis::linear(-1.0, 1.0).always_show_zero(true))
                     .x_axis_shown(false),
             ),
             settings_open: Default::default(),

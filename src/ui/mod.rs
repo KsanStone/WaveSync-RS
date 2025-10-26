@@ -2,7 +2,6 @@ use eframe::wgpu;
 use eframe::wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 use egui::Rect;
 use egui_wgpu::ScreenDescriptor;
-use crate::ui::visualizer::visualizer_widget::RenderArgs;
 
 pub mod gradient;
 pub mod plot;
@@ -97,6 +96,7 @@ fn create_pipeline(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_pipeline_color(
     device: &Device,
     shader: &wgpu::ShaderModule,

@@ -47,12 +47,10 @@ impl DummyAudioBackend {
 
         let mut test_sounds = vec![];
         if let Ok(dir) = std::fs::read_dir("test_sounds") {
-            for entry in dir {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.is_file() {
-                        test_sounds.push(path);
-                    }
+            for entry in dir.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    test_sounds.push(path);
                 }
             }
         }
