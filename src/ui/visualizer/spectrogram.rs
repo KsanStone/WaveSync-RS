@@ -10,11 +10,11 @@ use crate::ui::{
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 use crate::{create_shader, define_resource, deref_arc, impl_settings};
 use circular_buffer::CircularBuffer;
-use eframe::egui::{ComboBox, PaintCallback, PaintCallbackInfo, Rect};
-use eframe::epaint::Color32;
-use eframe::wgpu;
-use eframe::wgpu::util::DeviceExt;
-use eframe::wgpu::{
+use egui::{ComboBox, PaintCallback, PaintCallbackInfo, Rect};
+use egui::epaint::Color32;
+use egui_wgpu::wgpu;
+use wgpu::util::DeviceExt;
+use wgpu::{
     BindingResource, BufferAddress, BufferBindingType, CommandBuffer, CommandEncoder, Device,
     Queue, RenderPass,
 };
@@ -109,6 +109,14 @@ impl Visualizer for SpectrogramVisualizer {
         } else {
             PlotData::from_axis(db_axis, freq_axis)
         }
+    }
+
+
+    fn error_message(&self) -> Option<String> {
+        if self.audio_service.get_fft_size() > 2_usize.pow(15) {
+            return Some("Spectrogram visualizer does not support FFT sizes larger than 16k".to_string())
+        }
+        None
     }
 
     fn accept_fft(&self, fft_data: &[Vec<f32>; CHANNELS], fft_size: usize) {

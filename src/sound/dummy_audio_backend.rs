@@ -114,7 +114,7 @@ impl AudioBackend for DummyAudioBackend {
         let callback_weak = Arc::downgrade(self.capture_callback.as_ref().unwrap());
         let sequence_index = self.sequence_index.clone();
         let pattern_data = self.pattern_data.clone();
-        let source = self.capture_source.clone();
+        let _source = self.capture_source.clone();
 
         thread::spawn(move || {
             loop {
@@ -175,10 +175,6 @@ impl AudioBackend for DummyAudioBackend {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-}
-
-fn sample_wav(frame_l: &mut [f32], frame_r: &mut [f32]) {
-    let frame_size = frame_l.len();
 }
 
 fn synthesize_frames(frame_l: &mut [f32], frame_r: &mut [f32], sequence_index: &AtomicUsize, sequencer_frequency: &Mutex<f32>) {

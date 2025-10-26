@@ -1,5 +1,5 @@
-use eframe::wgpu;
-use eframe::wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
+use egui_wgpu::wgpu;
+use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 use egui::Rect;
 use egui_wgpu::ScreenDescriptor;
 

@@ -5,7 +5,7 @@ use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::wavesync::stable_num;
 use circular_buffer::CircularBuffer;
-use eframe::egui::RichText;
+use egui::RichText;
 use log::info;
 use rustfft::FftPlanner;
 use rustfft::num_complex::Complex;

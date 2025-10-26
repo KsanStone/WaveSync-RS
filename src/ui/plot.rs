@@ -1,6 +1,6 @@
-use eframe::egui::{Align2, FontFamily, FontId, Margin, Rect, Sense, Ui};
-use eframe::emath::Pos2;
-use eframe::epaint::Color32;
+use egui::{Align2, FontFamily, FontId, Margin, Rect, Sense, Ui};
+use egui::emath::Pos2;
+use egui::epaint::Color32;
 use std::ops::Sub;
 
 const PLOT_DIGITS: usize = 2;
@@ -121,7 +121,7 @@ impl Axis {
             let include_zero = self.always_show_zero && self.min < 0.0 && self.max > 0.0;
 
             let mut labels = (px_size / LABEL_SPACING_PX + 1.0).max(2.0).floor();
-            if include_zero && labels as u32 % 2 == 0 {
+            if include_zero && (labels as u32).is_multiple_of(2) {
                 labels += 1.0;
             }
             let step = (self.max - self.min) / (labels - 1.0);
@@ -291,7 +291,7 @@ impl<'a> Plot<'a> {
                     Pos2::new(px_pos, content_rect.max.y + 2.0),
                     Align2::CENTER_TOP,
                     label_format(pos, PLOT_DIGITS),
-                    FontId::new(10.0, FontFamily::Monospace),
+                    FontId::new(FONT_SIZE, FontFamily::Monospace),
                     self.label_color,
                 );
             }
@@ -345,7 +345,7 @@ impl<'a> Plot<'a> {
                     Pos2::new(content_rect.min.x - 2.0, px_pos),
                     Align2::RIGHT_CENTER,
                     label_format(pos, PLOT_DIGITS),
-                    FontId::new(10.0, FontFamily::Monospace),
+                    FontId::new(FONT_SIZE, FontFamily::Monospace),
                     self.label_color,
                 );
             }

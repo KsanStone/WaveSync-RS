@@ -8,8 +8,8 @@ use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSett
 use crate::ui::visualizer::vectorscope::VectorscopeVisualizer;
 use crate::ui::visualizer::visualizer_widget::{RenderArgs, Visualizer, VisualizerWidget};
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
-use eframe::egui;
-use eframe::egui::{Color32, Sense, Vec2, Widget};
+use egui;
+use egui::{Color32, Sense, Vec2, Widget};
 use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use std::default::Default;
@@ -18,6 +18,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use egui::Rect;
+use crate::persistance::{Persistence, APP_KEY};
 use crate::ui::visualizer::VisualizerType;
 
 pub type VisualizerBoundCache = std::collections::HashMap<(VisualizerType, AudioChannel), Rect>;
@@ -262,7 +263,7 @@ impl AppHandler for WaveSync {
                     ui.horizontal(|ui| {
                         ui.label("Fft rate");
                         ui.add(egui::Slider::new(&mut val, 1..=200));
-                        self.audio_service.fft_rate.store(val, std::sync::atomic::Ordering::Release);
+                        self.audio_service.fft_rate.store(val, Ordering::Release);
                     });
                     let min_accurate_freq = self.audio_service.get_source().calculate_frequency_resolution(self.audio_service.get_fft_size());
                         let duration_between_fft = Duration::from_secs_f64(1.0 / val as f64);
@@ -275,14 +276,14 @@ impl AppHandler for WaveSync {
         }
     }
 
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+    fn save(&mut self, persistence: &mut Persistence) {
         let mut data = self.data.write().unwrap();
 
         data.fft_size = self.audio_service.get_fft_size();
         data.fft_rate = self.audio_service.fft_rate.load(Ordering::Acquire);
         data.theme_name = theme_text(self.visuals.theme);
 
-        eframe::set_value(storage, eframe::APP_KEY, &*data);
+        persistence.set(APP_KEY, &*data);
     }
 
     fn post_egui(

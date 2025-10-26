@@ -1,13 +1,18 @@
+use std::collections::HashMap;
 use crate::egui_tools::EguiRenderer;
 use egui::{Context, IconData};
 use egui_wgpu::wgpu::SurfaceError;
 use egui_wgpu::{ScreenDescriptor, wgpu};
 use std::sync::Arc;
+use std::time::Instant;
+use log::{debug, info};
+use serde::{Deserialize, Serialize};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
+use crate::persistance::{Persistence, WINDOW_KEY};
 use crate::ui::visualizer::visualizer_widget::RenderArgs;
 
 pub struct AppState {
@@ -94,20 +99,35 @@ impl AppState {
     }
 }
 
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub struct WindowRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub struct WindowData {
+    windows: HashMap<String, WindowRect>,
+}
+
 pub struct App {
     instance: wgpu::Instance,
     state: Option<AppState>,
     window: Option<Arc<Window>>,
     _icon_data: IconData,
+    persistence: Persistence,
     handler: Box<dyn AppHandler>,
+    name: &'static str,
+    last_save: Instant,
 }
 
 pub trait AppHandler {
     fn update(&mut self, ctx: &Context);
 
-    fn save(&mut self, storage: &mut dyn eframe::Storage);
+    fn save(&mut self, persistence: &mut Persistence);
 
-    #[allow(clippy::too_many_arguments)] // sybau
     fn post_egui(
         &mut self,
         args: RenderArgs,
@@ -115,14 +135,22 @@ pub trait AppHandler {
 }
 
 impl App {
-    pub fn new(icon: IconData, handler: Box<dyn AppHandler>) -> Self {
+    pub fn new<F>(name: &'static str, icon: IconData, handler_creator: F) -> Self
+    where
+        F: FnOnce(&mut Persistence) -> Box<dyn AppHandler>,
+    {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let mut persistence = Persistence::new(name, "WaveSync");
+
         Self {
+            handler: handler_creator(&mut persistence),
+            name,
             instance,
             state: None,
             window: None,
             _icon_data: icon,
-            handler,
+            persistence,
+            last_save: Instant::now(),
         }
     }
 
@@ -232,13 +260,53 @@ impl App {
 
         state.queue.submit(Some(encoder.finish()));
         surface_texture.present();
+
+        // We could have a thread that saves every 30 seconds,
+        // but why bother.
+        if self.last_save.elapsed().as_secs() > 30 {
+            self.save();
+            self.last_save = Instant::now();
+        }
+    }
+
+    fn save(&mut self) {
+        self.handler.save(&mut self.persistence);
+        // fetch the window size, and position
+        let window = self.window.as_ref().unwrap();
+        let size = window.inner_size();
+        let position = window.outer_position();
+        if let Ok(position) = position {
+            debug!("Saving window position: {:?} {:?}", position, size);
+            let window_data = WindowData {
+                windows: HashMap::from([
+                    ("main".into(), WindowRect {
+                        x: position.x,
+                        y: position.y,
+                        width: size.width,
+                        height: size.height,
+                    })
+                ]),
+            };
+            self.persistence.set(WINDOW_KEY, &window_data);
+        }
+        self.persistence.save();
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+
+        let mut window_attributes = Window::default_attributes().with_title(self.name);
+        if let Some(window_data) = self.persistence.get::<WindowData>(WINDOW_KEY)
+            && let Some(window_rect) = window_data.windows.get("main") {
+                debug!("Restoring window position: {:?}", window_rect);
+                window_attributes = window_attributes
+                    .with_inner_size(PhysicalSize::new(window_rect.width, window_rect.height))
+                    .with_position(PhysicalPosition::new(window_rect.x, window_rect.y));
+            }
+
         let window = event_loop
-            .create_window(Window::default_attributes().with_title("WaveSync"))
+            .create_window(window_attributes)
             .unwrap();
         pollster::block_on(self.set_window(window));
     }
@@ -253,7 +321,7 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
+                info!("The close button was pressed; stopping");
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
@@ -266,5 +334,11 @@ impl ApplicationHandler for App {
             }
             _ => (),
         }
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.save();
     }
 }

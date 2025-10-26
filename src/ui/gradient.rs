@@ -1,4 +1,4 @@
-use eframe::egui::Color32;
+use egui::Color32;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Stop {

@@ -6,7 +6,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, Stream, StreamConfig};
 use log::error;
 use std::any::Any;
-use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -14,8 +13,6 @@ use std::thread;
 pub struct CpalAudioBackend {
     capture_callback: OptionCaptureCallback,
     audio_system: AudioSystem,
-    capture_source: CaptureSource,
-    sequence_index: Arc<AtomicUsize>,
     host: Host,
     capture_stop_signal: Option<Sender<()>>,
     /// true if it's a mic/real input, false if it's a loopback device
@@ -98,16 +95,6 @@ impl CpalAudioBackend {
                 name: host.id().name().to_string(),
                 backend: AudioBackendType::Cpal,
             },
-            capture_source: CaptureSource {
-                name: "Default Input Device".to_string(),
-                id: "default_input".to_string(),
-                is_loopback: false,
-                channels: 2,
-                sample_rate: 48000,
-                format: SampleFormat::F32,
-                backend: AudioBackendType::Cpal,
-            },
-            sequence_index: Default::default(),
             host,
             capture_stop_signal: None,
             input_devices,

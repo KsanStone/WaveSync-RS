@@ -1,10 +1,12 @@
 use crate::sound::audio_service::CHANNELS;
 use crate::ui::plot::{Plot, PlotData};
 use crate::wavesync::WaveSyncVisuals;
-use eframe::egui::{Pos2, Rect, Response, Ui, Widget};
-use eframe::wgpu::{CommandEncoder, Device, Queue, TextureView};
-use eframe::{egui, epaint};
-use eframe::emath::Align2;
+use egui::{Pos2, Rect, Response, Ui, Widget};
+use egui_wgpu::wgpu;
+use wgpu::{CommandEncoder, Device, Queue, TextureView};
+use {egui};
+use egui::epaint;
+use egui::emath::Align2;
 use egui::FontId;
 use egui_wgpu::{CallbackResources, ScreenDescriptor};
 use winit::window::Window;
@@ -41,13 +43,13 @@ pub trait Visualizer: Send + Sync + 'static {
 
     fn get_post_egui_render(
         &self,
-        rect: Rect,
-        visuals: &WaveSyncVisuals,
+        _rect: Rect,
+        _visuals: &WaveSyncVisuals,
     ) -> Option<Box<dyn PostEquiRender>> {
         None
     }
 
-    fn draw_settings(&self, ctx: &egui::Context) {}
+    fn draw_settings(&self, _ctx: &egui::Context) {}
 
     fn open_settings(&self) {}
 }
@@ -91,13 +93,11 @@ impl<'a> Widget for VisualizerWidget<'a> {
 
         if let Some(err_message) = self.visualizer.error_message() {
             ui.painter().text(content_rect.center(), Align2::CENTER_CENTER, err_message, FontId::default(), ui.visuals().text_color());
-        } else {
-            if let Some(callback) = self
-                .visualizer
-                .get_draw_callback(content_rect, self.wavesync_visuals)
-            {
-                ui.painter().add(callback);
-            }
+        } else if let Some(callback) = self
+            .visualizer
+            .get_draw_callback(content_rect, self.wavesync_visuals)
+        {
+            ui.painter().add(callback);
         }
 
         self.cached_rect.clone_from(&content_rect);

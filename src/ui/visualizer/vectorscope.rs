@@ -8,13 +8,14 @@ use crate::ui::{
 };
 use crate::wavesync::WaveSyncVisuals;
 use crate::{create_shader, define_resource, deref_arc, WaveSyncAppData};
-use eframe::egui::{PaintCallback, PaintCallbackInfo, Rect};
-use eframe::wgpu::util::DeviceExt;
-use eframe::wgpu::{
+use egui::{PaintCallback, PaintCallbackInfo, Rect};
+use egui_wgpu::wgpu;
+use wgpu::util::DeviceExt;
+use wgpu::{
     BufferAddress, CommandBuffer, CommandEncoder, Device, PrimitiveTopology, Queue, RenderPass,
     StorageTextureAccess, StoreOp, TextureFormat, TextureViewDimension,
 };
-use eframe::{egui, wgpu};
+use {egui};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};

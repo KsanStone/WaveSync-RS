@@ -3,12 +3,14 @@ use crate::wavesync::{WaveSync, WaveSyncAppData};
 use egui::IconData;
 use std::env;
 use winit::event_loop::{ControlFlow, EventLoop};
+use crate::persistance::APP_KEY;
 
 pub mod app;
 pub mod egui_tools;
 pub mod sound;
 pub mod ui;
 pub mod wavesync;
+mod persistance;
 
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]
@@ -39,8 +41,12 @@ async fn run() {
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::new(
+        "WaveSync",
         icon_data,
-        Box::new(WaveSync::new(WaveSyncAppData::default())),
+        |persistence| {
+            let data: WaveSyncAppData = persistence.get(APP_KEY).unwrap_or_default();
+            Box::new(WaveSync::new(data))
+        },
     );
 
     event_loop.run_app(&mut app).expect("Failed to run app");
