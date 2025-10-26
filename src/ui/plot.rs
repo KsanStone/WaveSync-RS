@@ -1,6 +1,6 @@
-use egui::{Align2, FontFamily, FontId, Margin, Rect, Sense, Ui};
 use egui::emath::Pos2;
 use egui::epaint::Color32;
+use egui::{Align2, FontFamily, FontId, Margin, Rect, Sense, Ui};
 use std::ops::Sub;
 
 const PLOT_DIGITS: usize = 2;
@@ -389,7 +389,7 @@ impl<'a> Plot<'a> {
 /// abbreviates large values to for ex. 20k, 1M
 /// and rounds vals, to make the fit and look nice on sound-related charts.
 fn label_format(x: f32, n: usize) -> String {
-    if x.abs() < 0.00001 {
+    if x.abs() < 0.001 {
         return "0".to_string();
     }
 

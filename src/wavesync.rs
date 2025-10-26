@@ -1,14 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use crate::app::AppHandler;
+use crate::persistance::{APP_KEY, Persistence};
 use crate::sound;
 use crate::sound::AudioChannel;
+use crate::sound::audio_service::CHANNELS;
+use crate::ui::visualizer::VisualizerType;
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
-use crate::ui::visualizer::vectorscope::VectorscopeVisualizer;
+use crate::ui::visualizer::vectorscope::{VectorscopeSettings, VectorscopeVisualizer};
 use crate::ui::visualizer::visualizer_widget::{RenderArgs, Visualizer, VisualizerWidget};
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
 use egui;
+use egui::Rect;
 use egui::{Color32, Sense, Vec2, Widget};
 use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
@@ -17,16 +21,13 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use egui::Rect;
-use crate::persistance::{Persistence, APP_KEY};
-use crate::ui::visualizer::VisualizerType;
 
 pub type VisualizerBoundCache = std::collections::HashMap<(VisualizerType, AudioChannel), Rect>;
 
 pub struct WaveSync {
     audio_service: sound::audio_service::AudioService,
-    waveform_visualizer: WaveformVisualizer,
-    spectrum_visualizer: SpectrumVisualizer,
+    waveform_visualizers: Vec<WaveformVisualizer>,
+    spectrum_visualizers: Vec<SpectrumVisualizer>,
     spectrogram_visualizer: SpectrogramVisualizer,
     vectorscope_visualizer: VectorscopeVisualizer,
     settings_shown: bool,
@@ -36,12 +37,12 @@ pub struct WaveSync {
     visualizer_bounds: VisualizerBoundCache,
 }
 
-
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct WaveSyncAppData {
     pub waveform_settings: WaveformSettings,
     pub spectrum_settings: SpectrumVisualizerSettings,
     pub spectrogram_settings: SpectrogramSettings,
+    pub vectorscope_settings: VectorscopeSettings,
     pub fft_rate: u32,
     pub fft_size: usize,
     pub theme_name: String,
@@ -83,10 +84,23 @@ impl WaveSync {
         let theme_name = data.theme_name.clone();
         let data = Arc::new(RwLock::new(data));
 
-        let waveform_visualizer =
-            WaveformVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone());
-        let spectrum_visualizer =
-            SpectrumVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone());
+        let mut waveform_visualizers = vec![];
+        let mut spectrum_visualizers = vec![];
+
+        for channel in 0..CHANNELS {
+            let channel = AudioChannel::try_from(channel as u32).unwrap();
+            waveform_visualizers.push(WaveformVisualizer::new(
+                audio_service.clone(),
+                channel,
+                data.clone(),
+            ));
+            spectrum_visualizers.push(SpectrumVisualizer::new(
+                audio_service.clone(),
+                channel,
+                data.clone(),
+            ));
+        }
+
         let spectrogram_visualizer =
             SpectrogramVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone());
         let vectorscope_visualizer =
@@ -98,8 +112,8 @@ impl WaveSync {
         audio_service.register_fft_listener(Box::new(spectrogram_visualizer.clone()));
 
         Self {
-            waveform_visualizer,
-            spectrum_visualizer,
+            waveform_visualizers,
+            spectrum_visualizers,
             spectrogram_visualizer,
             vectorscope_visualizer,
             audio_service,
@@ -111,6 +125,123 @@ impl WaveSync {
             data,
             visualizer_bounds: Default::default(),
         }
+    }
+
+    fn mono_layout(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        StripBuilder::new(ui)
+            .sizes(Size::remainder(), 2)
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    StripBuilder::new(ui)
+                        .sizes(Size::remainder(), 2)
+                        .vertical(|mut strip| {
+                            strip.cell(|ui| {
+                                ui.add(VisualizerWidget::new(
+                                    Box::new(self.spectrum_visualizers[0].clone()),
+                                    ctx,
+                                    &self.visuals,
+                                ));
+                            });
+
+                            strip.cell(|ui| {
+                                ui.add(VisualizerWidget::new(
+                                    Box::new(self.spectrogram_visualizer.clone()),
+                                    ctx,
+                                    &self.visuals,
+                                ));
+                            });
+                        });
+                });
+                strip.cell(|ui| {
+                    StripBuilder::new(ui)
+                        .sizes(Size::remainder(), 2)
+                        .vertical(|mut strip| {
+                            strip.cell(|ui| {
+                                let mut rect = Rect::ZERO;
+                                ui.add(
+                                    VisualizerWidget::new(
+                                        Box::new(self.vectorscope_visualizer.clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    )
+                                    .view_rect(&mut rect),
+                                );
+                                self.visualizer_bounds.insert(
+                                    (VisualizerType::Vectorscope, AudioChannel::Master),
+                                    rect,
+                                );
+                            });
+
+                            strip.cell(|ui| {
+                                ui.add(VisualizerWidget::new(
+                                    Box::new(self.waveform_visualizers[0].clone()),
+                                    ctx,
+                                    &self.visuals,
+                                ));
+                            });
+                        });
+                });
+            });
+    }
+
+    fn stereo_layout(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        StripBuilder::new(ui)
+            .sizes(Size::remainder(), 3)
+            .horizontal(|mut strip| {
+                strip.cell(|ui| {
+                    StripBuilder::new(ui)
+                        .sizes(Size::remainder(), 2)
+                        .vertical(|mut strip| {
+                            strip.cell(|ui| {
+                                let mut rect = Rect::ZERO;
+                                ui.add(
+                                    VisualizerWidget::new(
+                                        Box::new(self.vectorscope_visualizer.clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    )
+                                    .view_rect(&mut rect),
+                                );
+                                self.visualizer_bounds.insert(
+                                    (VisualizerType::Vectorscope, AudioChannel::Master),
+                                    rect,
+                                );
+                            });
+
+                            strip.cell(|ui| {
+                                ui.add(VisualizerWidget::new(
+                                    Box::new(self.spectrogram_visualizer.clone()),
+                                    ctx,
+                                    &self.visuals,
+                                ));
+                            });
+                        });
+                });
+
+                for i in 1..3 {
+                    strip.cell(|ui| {
+                        StripBuilder::new(ui)
+                            .sizes(Size::remainder(), 2)
+                            .vertical(|mut strip| {
+                                strip.cell(|ui| {
+                                    ui.add(VisualizerWidget::new(
+                                        Box::new(self.waveform_visualizers[i].clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    ));
+                                });
+
+                                strip.cell(|ui| {
+                                    ui.add(VisualizerWidget::new(
+                                        Box::new(self.spectrum_visualizers[i].clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    ));
+                                });
+                            });
+                    });
+                }
+            });
     }
 }
 
@@ -159,8 +290,11 @@ impl AppHandler for WaveSync {
                         .as_any()
                         .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>(
                     ) {
-                        let mut sequencer_frequency =
-                            dummy_backend.pattern_data.sequencer_frequency.lock().unwrap();
+                        let mut sequencer_frequency = dummy_backend
+                            .pattern_data
+                            .sequencer_frequency
+                            .lock()
+                            .unwrap();
                         egui::Slider::new(
                             &mut *sequencer_frequency,
                             RangeInclusive::from(egui::Rangef::new(20.0, 1000.0)),
@@ -169,59 +303,13 @@ impl AppHandler for WaveSync {
                     }
                 });
             });
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            StripBuilder::new(ui)
-                .sizes(Size::remainder(), 2)
-                .horizontal(|mut strip| {
-                    strip.cell(|ui| {
-                        StripBuilder::new(ui)
-                            .sizes(Size::remainder(), 2)
-                            .vertical(|mut strip| {
-                                strip.cell(|ui| {
-                                    ui.add(VisualizerWidget::new(
-                                        Box::new(self.spectrum_visualizer.clone()),
-                                        ctx,
-                                        &self.visuals,
-                                        &mut Rect::ZERO,
-                                    ));
-                                });
-
-                                strip.cell(|ui| {
-                                    ui.add(VisualizerWidget::new(
-                                        Box::new(self.spectrogram_visualizer.clone()),
-                                        ctx,
-                                        &self.visuals,
-                                        &mut Rect::ZERO,
-                                    ));
-                                });
-                            });
-                    });
-                    strip.cell(|ui| {
-                        StripBuilder::new(ui)
-                            .sizes(Size::remainder(), 2)
-                            .vertical(|mut strip| {
-                                strip.cell(|ui| {
-                                    let mut rect = Rect::ZERO;
-                                    ui.add(VisualizerWidget::new(
-                                        Box::new(self.vectorscope_visualizer.clone()),
-                                        ctx,
-                                        &self.visuals,
-                                        &mut rect,
-                                    ));
-                                    self.visualizer_bounds.insert((VisualizerType::Vectorscope, AudioChannel::Master), rect);
-                                });
-
-                                strip.cell(|ui| {
-                                    ui.add(VisualizerWidget::new(
-                                        Box::new(self.waveform_visualizer.clone()),
-                                        ctx,
-                                        &self.visuals,
-                                        &mut Rect::ZERO
-                                    ));
-                                });
-                            });
-                    });
-                });
+            if self.audio_service.get_active_audio_channels() == 1 {
+                self.mono_layout(ui, ctx);
+            } else {
+                self.stereo_layout(ui, ctx);
+            }
         });
         if self.settings_shown {
             egui::Window::new("Settings")
@@ -286,19 +374,19 @@ impl AppHandler for WaveSync {
         persistence.set(APP_KEY, &*data);
     }
 
-    fn post_egui(
-        &mut self,
-        mut args: RenderArgs,
-    ) {
-        let rect = self.visualizer_bounds.get(&(VisualizerType::Vectorscope, AudioChannel::Master)).cloned();
+    fn post_egui(&mut self, mut args: RenderArgs) {
+        let rect = self
+            .visualizer_bounds
+            .get(&(VisualizerType::Vectorscope, AudioChannel::Master))
+            .cloned();
         if let Some(rect) = rect {
-            let vectorscope_callback = &self.vectorscope_visualizer.get_post_egui_render(rect, &self.visuals);
+            let vectorscope_callback = &self
+                .vectorscope_visualizer
+                .get_post_egui_render(rect, &self.visuals);
             if let Some(callback) = vectorscope_callback {
                 callback.post_egui_render(&mut args);
             }
         }
-
-
     }
 }
 

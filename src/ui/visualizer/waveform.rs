@@ -4,15 +4,14 @@ use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
-use crate::{define_resource, deref_arc, impl_settings};
-use egui::{PaintCallback, Rect, Slider};
-use egui::epaint::PaintCallbackInfo;
-use egui_wgpu::wgpu::util::DeviceExt;
-use {egui};
-use egui_wgpu::wgpu;
+use crate::{deref_arc, impl_settings};
+use egui;
 use egui::Ui;
+use egui::epaint::PaintCallbackInfo;
+use egui::{PaintCallback, Rect, Slider};
+use egui_wgpu::wgpu;
+use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use log::info;
 use serde::{Deserialize, Serialize};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,16 +26,17 @@ deref_arc!(WaveformVisualizer);
 
 pub struct Inner {
     audio_service: AudioService,
-    plot_data: Mutex<PlotData>,
     settings_open: AtomicBool,
     channel: AudioChannel,
     data: Arc<RwLock<WaveSyncAppData>>,
+    render_resources: Mutex<Option<RenderResources>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WaveformSettings {
     pub align_to_peak: bool,
     pub duration: Duration,
+    pub range: f32,
 }
 
 impl Default for WaveformSettings {
@@ -44,6 +44,7 @@ impl Default for WaveformSettings {
         Self {
             align_to_peak: true,
             duration: Duration::from_millis(150),
+            range: 1.0,
         }
     }
 }
@@ -57,19 +58,21 @@ impl WaveformVisualizer {
         Self(Arc::new(Inner {
             audio_service,
             channel,
-            plot_data: Mutex::new(
-                PlotData::from_axis(Axis::linear(0.0, 1.0), Axis::linear(-1.0, 1.0).always_show_zero(true))
-                    .x_axis_shown(false),
-            ),
             settings_open: Default::default(),
             data,
+            render_resources: Default::default(),
         }))
     }
 }
 
 impl Visualizer for WaveformVisualizer {
     fn get_plot_data(&self) -> PlotData {
-        self.plot_data.lock().unwrap().clone()
+        let range = self.data.read().unwrap().waveform_settings.range;
+        PlotData::from_axis(
+            Axis::linear(0.0, 1.0),
+            Axis::linear(-range, range).always_show_zero(true),
+        )
+        .x_axis_shown(false)
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
@@ -81,7 +84,6 @@ impl Visualizer for WaveformVisualizer {
 
     impl_settings!("Waveform Settings", ui, this, {
         let settings = &mut this.data.write().unwrap().waveform_settings;
-        let mut plot_data = this.plot_data.lock().unwrap();
 
         ui.horizontal(|ui| {
             ui.checkbox(&mut settings.align_to_peak, "Align to peak");
@@ -97,10 +99,7 @@ impl Visualizer for WaveformVisualizer {
 
         ui.horizontal(|ui| {
             ui.label("Range");
-            let mut range = plot_data.y_axis.range();
-            ui.add(Slider::new(&mut range, 0.1..=3.0));
-            plot_data.y_axis.min = -range * 0.5;
-            plot_data.y_axis.max = range * 0.5;
+            ui.add(Slider::new(&mut settings.range, 0.1..=3.0));
         })
     });
 }
@@ -135,10 +134,13 @@ struct Uniforms {
     color: [f32; 4],
 }
 
-define_resource!(WaveformPipeline, wgpu::RenderPipeline);
-define_resource!(WaveformVertexBuffer, wgpu::Buffer);
-define_resource!(WaveformUniformBuffer, wgpu::Buffer);
-define_resource!(WaveformBindGroup, wgpu::BindGroup);
+struct RenderResources {
+    queue: wgpu::Queue,
+    vertex_buffer: wgpu::Buffer,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
+}
 
 impl CallbackTrait for WaveformVisualizerCallback {
     fn prepare(
@@ -147,14 +149,12 @@ impl CallbackTrait for WaveformVisualizerCallback {
         queue: &wgpu::Queue,
         _screen: &ScreenDescriptor,
         _encoder: &mut wgpu::CommandEncoder,
-        resources: &mut CallbackResources,
+        _resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
-        if resources.get::<WaveformPipeline>().is_none() {
-            info!("Creating waveform pipeline");
-            resources.insert(queue.clone());
-            resources.insert(WaveformVertexBuffer(
-                WaveformVisualizerCallback::create_vertex_buffer(device),
-            ));
+        let mut resources = self.visualizer.render_resources.lock().unwrap();
+
+        if resources.is_none() {
+            let vertex_buffer = WaveformVisualizerCallback::create_vertex_buffer(device);
 
             let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("line shader"),
@@ -179,16 +179,20 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 push_constant_ranges: &[],
             });
 
-            resources.insert(WaveformUniformBuffer(uniform_buffer));
-            resources.insert(WaveformBindGroup(bind_group));
-            resources.insert(WaveformPipeline(create_pipeline(
-                device,
-                &shader,
-                &pipeline_layout,
-                wgpu::PrimitiveTopology::LineStrip,
-                &[VERTEX_2D_BUFFER_LAYOUT],
-                "waveform_pipeline",
-            )));
+            *resources = Some(RenderResources {
+                queue: queue.clone(),
+                vertex_buffer,
+                uniform_buffer,
+                bind_group,
+                pipeline: create_pipeline(
+                    device,
+                    &shader,
+                    &pipeline_layout,
+                    wgpu::PrimitiveTopology::LineStrip,
+                    &[VERTEX_2D_BUFFER_LAYOUT],
+                    "waveform_pipeline",
+                ),
+            })
         }
         Vec::new()
     }
@@ -197,19 +201,20 @@ impl CallbackTrait for WaveformVisualizerCallback {
         &self,
         info: PaintCallbackInfo,
         render_pass: &mut wgpu::RenderPass<'static>,
-        resources: &CallbackResources,
+        _resources: &CallbackResources,
     ) {
         let channel = self.visualizer.channel;
         let settings = &self.visualizer.data.read().unwrap().waveform_settings;
         let source = self.visualizer.audio_service.get_source();
         let audio_service = &self.visualizer.audio_service;
-        let plot_data = self.visualizer.plot_data.lock().unwrap();
-        if let Some(pipeline) = resources.get::<WaveformPipeline>() {
-            let queue = resources.get::<wgpu::Queue>().unwrap();
-
-            let buffer = resources.get::<WaveformVertexBuffer>().unwrap();
-            let uniform_buffer = resources.get::<WaveformUniformBuffer>().unwrap();
-            let bind_group = resources.get::<WaveformBindGroup>().unwrap();
+        let plot_data = self.visualizer.get_plot_data();
+        let resources = self.visualizer.render_resources.lock().unwrap();
+        if let Some(resources) = resources.as_ref() {
+            let queue = &resources.queue;
+            let buffer = &resources.vertex_buffer;
+            let uniform_buffer = &resources.uniform_buffer;
+            let bind_group = &resources.bind_group;
+            let pipeline = &resources.pipeline;
 
             let nums = buffer.size() as usize / size_of::<f32>();
             let half_buffer_size = (nums / 4) as u32; // 2 floats per vertex
@@ -275,7 +280,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 }),
             );
 
-            render_pass.set_bind_group(0, &bind_group.0, &[]);
+            render_pass.set_bind_group(0, bind_group, &[]);
             render_pass.set_vertex_buffer(0, buffer.slice(..));
             render_pass.set_pipeline(pipeline);
             render_pass.draw(0..vertices_written, 0..1);

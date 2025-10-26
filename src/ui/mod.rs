@@ -1,32 +1,11 @@
-use egui_wgpu::wgpu;
-use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 use egui::Rect;
 use egui_wgpu::ScreenDescriptor;
+use egui_wgpu::wgpu;
+use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 
 pub mod gradient;
 pub mod plot;
 pub mod visualizer;
-
-/// Creates a custom wrapper type for WGPU resources
-/// this allows us to have multiple objects of the same type in the
-/// default object registry, neet!
-#[macro_export]
-macro_rules! define_resource {
-    ($name:ident, $inner:ty) => {
-        struct $name(pub $inner);
-        impl std::ops::Deref for $name {
-            type Target = $inner;
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-        impl std::ops::DerefMut for $name {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
-            }
-        }
-    };
-}
 
 #[macro_export]
 macro_rules! deref_arc {

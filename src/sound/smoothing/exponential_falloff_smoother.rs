@@ -1,4 +1,5 @@
 use crate::sound::smoothing::FloatArraySmoother;
+use crate::ui::visualizer::spectrum::SmootherType;
 
 pub struct ExponentialFalloffSmoother {
     factor: f32,
@@ -51,5 +52,9 @@ impl FloatArraySmoother for ExponentialFalloffSmoother {
         }
 
         &self.current_state
+    }
+
+    fn get_type(&self) -> SmootherType {
+        SmootherType::ExponentialFalloff
     }
 }

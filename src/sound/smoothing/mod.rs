@@ -1,3 +1,5 @@
+use crate::ui::visualizer::spectrum::SmootherType;
+
 pub mod exponential_falloff_smoother;
 pub mod multiplicative_smoother;
 
@@ -13,4 +15,6 @@ pub trait FloatArraySmoother: Send + Sync {
     /// delta_t - seconds since last frame
     /// recent_data - the target towards which the data is smoothed
     fn smooth_data(&mut self, delta_t: f32, recent_data: &[f32]) -> &[f32];
+
+    fn get_type(&self) -> SmootherType;
 }

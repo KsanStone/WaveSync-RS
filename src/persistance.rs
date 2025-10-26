@@ -1,11 +1,11 @@
 use directories_next::ProjectDirs;
+use log::info;
 use ron::de::from_str;
-use ron::ser::{to_string_pretty, PrettyConfig};
+use ron::ser::{PrettyConfig, to_string_pretty};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self};
 use std::path::PathBuf;
-use log::info;
 
 pub const APP_KEY: &str = "app";
 pub const WINDOW_KEY: &str = "window";
@@ -26,7 +26,7 @@ impl Persistence {
             .expect("Could not determine project dirs")
             .data_dir()
             .join("storage.ron");
-        
+
         info!("Initializing persistence @ {}", path.display());
 
         if let Some(parent) = path.parent() {
@@ -54,7 +54,10 @@ impl Persistence {
     }
 
     pub fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
-        self.data.map.get(key).and_then(|ron_str| from_str(ron_str).ok())
+        self.data
+            .map
+            .get(key)
+            .and_then(|ron_str| from_str(ron_str).ok())
     }
 
     pub fn save(&self) {
@@ -67,5 +70,5 @@ impl Persistence {
 impl Drop for Persistence {
     fn drop(&mut self) {
         self.save();
-    }   
+    }
 }

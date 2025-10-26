@@ -1,14 +1,21 @@
 use crate::sound::smoothing::FloatArraySmoother;
+use crate::ui::visualizer::spectrum::SmootherType;
 
 pub struct MultiplicativeSmoother {
     factor: f32,
     current_state: Vec<f32>,
 }
 
+impl Default for MultiplicativeSmoother {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiplicativeSmoother {
-    pub fn new(factor: f32) -> Self {
+    pub fn new() -> Self {
         Self {
-            factor,
+            factor: 0.5,
             current_state: vec![],
         }
     }
@@ -36,5 +43,9 @@ impl FloatArraySmoother for MultiplicativeSmoother {
         }
 
         &self.current_state
+    }
+
+    fn get_type(&self) -> SmootherType {
+        SmootherType::Multiplicative
     }
 }

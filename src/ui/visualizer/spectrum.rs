@@ -7,15 +7,14 @@ use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
-use crate::{create_shader, define_resource, deref_arc, impl_settings};
+use crate::{create_shader, deref_arc, impl_settings};
+use egui;
+use egui::Ui;
 use egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
+use egui_wgpu::wgpu;
 use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
-use {egui};
-use egui_wgpu::wgpu;
-use egui::Ui;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
-use log::info;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -34,6 +33,7 @@ pub struct Inner {
     settings_open: AtomicBool,
     last_draw: Mutex<Instant>,
     channel: AudioChannel,
+    render_resources: Mutex<Option<RenderResources>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -59,7 +59,6 @@ impl Default for SpectrumVisualizerSettings {
 pub enum SpectrumVisualizerType {
     Bar,
     Line,
-    
 }
 
 #[derive(PartialEq, Copy, Clone, Debug, Serialize, Deserialize)]
@@ -83,9 +82,10 @@ impl SpectrumVisualizer {
                 Axis::linear(-100.0, 0.0),
             )),
             data,
-            smoother: Mutex::new(Some(Box::new(MultiplicativeSmoother::new(0.6)))),
+            smoother: Mutex::new(None),
             settings_open: Default::default(),
             last_draw: Mutex::new(Instant::now()),
+            render_resources: Default::default(),
         }))
     }
 }
@@ -151,7 +151,6 @@ impl Visualizer for SpectrumVisualizer {
 
         ui.horizontal(|ui| {
             ui.label("Smoothing: ");
-            let before_type = settings.smoother_type;
             egui::ComboBox::from_id_salt("smoothing")
                 .selected_text(format!("{:?}", settings.smoother_type))
                 .show_ui(ui, |ui| {
@@ -167,19 +166,6 @@ impl Visualizer for SpectrumVisualizer {
                         "Exponential falloff",
                     );
                 });
-
-            if before_type != settings.smoother_type {
-                let mut smoother = this.smoother.lock().unwrap();
-                match settings.smoother_type {
-                    SmootherType::None => smoother.take(),
-                    SmootherType::Multiplicative => {
-                        smoother.replace(Box::new(MultiplicativeSmoother::new(0.1)))
-                    }
-                    SmootherType::ExponentialFalloff => {
-                        smoother.replace(Box::new(ExponentialFalloffSmoother::new()))
-                    }
-                };
-            }
         });
 
         ui.style_mut().spacing.slider_width = 150.0;
@@ -189,9 +175,6 @@ impl Visualizer for SpectrumVisualizer {
                 .min_decimals(3)
                 .step_by(0.005),
         );
-        if let Some(smoother) = this.smoother.lock().unwrap().as_mut() {
-            smoother.set_factor(settings.smoother_factor);
-        }
     });
 }
 
@@ -226,13 +209,16 @@ struct BarInstanceData {
     x_2: f32,
 }
 
-define_resource!(SpectrumBarsPipeline, wgpu::RenderPipeline);
-define_resource!(SpectrumLinePipeline, wgpu::RenderPipeline);
-define_resource!(SpectrumLineFillPipeline, wgpu::RenderPipeline);
-define_resource!(SpectrumVertexBuffer, wgpu::Buffer);
-define_resource!(SpectrumInstanceBuffer, wgpu::Buffer);
-define_resource!(SpectrumUniformBuffer, wgpu::Buffer);
-define_resource!(SpectrumBindGroup, wgpu::BindGroup);
+struct RenderResources {
+    bars_pipeline: wgpu::RenderPipeline,
+    line_pipeline: wgpu::RenderPipeline,
+    line_fill_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    instance_buffer: wgpu::Buffer,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    queue: Queue,
+}
 
 impl CallbackTrait for SpectrumVisualizerCallback {
     fn prepare(
@@ -241,27 +227,23 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         queue: &Queue,
         _screen_descriptor: &ScreenDescriptor,
         _egui_encoder: &mut CommandEncoder,
-        resources: &mut CallbackResources,
+        _resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
-        if resources.get::<SpectrumBarsPipeline>().is_none() {
-            info!("Creating spectrum pipeline");
-            resources.insert(queue.clone());
-            resources.insert(SpectrumVertexBuffer(device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("spectrum_vertex_buffer"),
-                    contents: bytemuck::cast_slice(&QUAD_VERTICES),
-                    usage: wgpu::BufferUsages::VERTEX,
-                },
-            )));
+        let mut resources = self.visualizer.render_resources.lock().unwrap();
 
-            resources.insert(SpectrumInstanceBuffer(device.create_buffer(
-                &wgpu::BufferDescriptor {
-                    label: Some("spectrum_instance_buffer"),
-                    size: MAX_BARS * 4 * size_of::<f64>() as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                },
-            )));
+        if resources.is_none() {
+            let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("spectrum_vertex_buffer"),
+                contents: bytemuck::cast_slice(&QUAD_VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+            let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("spectrum_instance_buffer"),
+                size: MAX_BARS * 4 * size_of::<f64>() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
 
             let bar_shader =
                 create_shader!(device, "bar shader", "../../../shader/instanced_bars.wgsl");
@@ -307,69 +289,71 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 push_constant_ranges: &[],
             });
 
-            resources.insert(SpectrumBindGroup(bind_group));
-            resources.insert(SpectrumUniformBuffer(uniform_buffer));
-
-            resources.insert(SpectrumBarsPipeline(create_pipeline(
-                device,
-                &bar_shader,
-                &pipeline_layout,
-                Default::default(),
-                &[
-                    VERTEX_2D_BUFFER_LAYOUT,
-                    wgpu::VertexBufferLayout {
-                        array_stride: size_of::<BarInstanceData>() as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[
-                            wgpu::VertexAttribute {
+            *resources = Some(RenderResources {
+                bars_pipeline: create_pipeline(
+                    device,
+                    &bar_shader,
+                    &pipeline_layout,
+                    Default::default(),
+                    &[
+                        VERTEX_2D_BUFFER_LAYOUT,
+                        wgpu::VertexBufferLayout {
+                            array_stride: size_of::<BarInstanceData>() as wgpu::BufferAddress,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &[
+                                wgpu::VertexAttribute {
+                                    offset: 0,
+                                    shader_location: 1,
+                                    format: wgpu::VertexFormat::Float32,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 4,
+                                    shader_location: 2,
+                                    format: wgpu::VertexFormat::Float32,
+                                },
+                                wgpu::VertexAttribute {
+                                    offset: 8,
+                                    shader_location: 3,
+                                    format: wgpu::VertexFormat::Float32,
+                                },
+                            ],
+                        },
+                    ],
+                    "spectrum_bar_pipeline",
+                ),
+                line_pipeline: create_pipeline(
+                    device,
+                    &line_shader,
+                    &pipeline_layout,
+                    wgpu::PrimitiveTopology::LineList,
+                    &[VERTEX_2D_BUFFER_LAYOUT],
+                    "spectrum_line_pipeline",
+                ),
+                line_fill_pipeline: create_pipeline(
+                    device,
+                    &line_fill_shader,
+                    &pipeline_layout,
+                    Default::default(),
+                    &[
+                        VERTEX_2D_BUFFER_LAYOUT,
+                        wgpu::VertexBufferLayout {
+                            array_stride: 4 * size_of::<f32>() as wgpu::BufferAddress,
+                            step_mode: wgpu::VertexStepMode::Instance,
+                            attributes: &[wgpu::VertexAttribute {
                                 offset: 0,
                                 shader_location: 1,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 4,
-                                shader_location: 2,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                            wgpu::VertexAttribute {
-                                offset: 8,
-                                shader_location: 3,
-                                format: wgpu::VertexFormat::Float32,
-                            },
-                        ],
-                    },
-                ],
-                "spectrum_bar_pipeline",
-            )));
-
-            resources.insert(SpectrumLineFillPipeline(create_pipeline(
-                device,
-                &line_fill_shader,
-                &pipeline_layout,
-                Default::default(),
-                &[
-                    VERTEX_2D_BUFFER_LAYOUT,
-                    wgpu::VertexBufferLayout {
-                        array_stride: 4 * size_of::<f32>() as wgpu::BufferAddress,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            offset: 0,
-                            shader_location: 1,
-                            format: wgpu::VertexFormat::Float32x4,
-                        }],
-                    },
-                ],
-                "spectrum_line_fill_pipeline",
-            )));
-
-            resources.insert(SpectrumLinePipeline(create_pipeline(
-                device,
-                &line_shader,
-                &pipeline_layout,
-                wgpu::PrimitiveTopology::LineList,
-                &[VERTEX_2D_BUFFER_LAYOUT],
-                "spectrum_line_pipeline",
-            )));
+                                format: wgpu::VertexFormat::Float32x4,
+                            }],
+                        },
+                    ],
+                    "spectrum_line_fill_pipeline",
+                ),
+                vertex_buffer,
+                instance_buffer,
+                uniform_buffer,
+                bind_group,
+                queue: queue.clone(),
+            })
         }
         Vec::new()
     }
@@ -378,139 +362,172 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         &self,
         info: PaintCallbackInfo,
         render_pass: &mut RenderPass<'static>,
-        callback_resources: &CallbackResources,
+        _callback_resources: &CallbackResources,
     ) {
-        if !callback_resources.contains::<SpectrumBarsPipeline>() {
-            return;
-        }
-        let delta_t = self.visualizer.last_draw.lock().unwrap().elapsed();
-        *self.visualizer.last_draw.lock().unwrap() = Instant::now();
+        let resources = self.visualizer.render_resources.lock().unwrap();
+        let smoother_factor = {
+            self.visualizer
+                .data
+                .read()
+                .unwrap()
+                .spectrum_settings
+                .smoother_factor
+        };
+        let smoother_type = {
+            self.visualizer
+                .data
+                .read()
+                .unwrap()
+                .spectrum_settings
+                .smoother_type
+        };
 
-        let channel = self.visualizer.channel;
-        let bar_pipeline = callback_resources.get::<SpectrumBarsPipeline>().unwrap();
-        let line_pipeline = callback_resources.get::<SpectrumLinePipeline>().unwrap();
-        let line_fill_pipeline = callback_resources
-            .get::<SpectrumLineFillPipeline>()
-            .unwrap();
-        let uniform_buffer = callback_resources.get::<SpectrumUniformBuffer>().unwrap();
-        let bind_group = callback_resources.get::<SpectrumBindGroup>().unwrap();
+        if let Some(resources) = resources.as_ref() {
+            let mut smoother = self.visualizer.smoother.lock().unwrap();
+            let mut curr_type = SmootherType::None;
+            if let Some(smoother) = smoother.as_ref() {
+                curr_type = smoother.get_type()
+            }
 
-        let plot_data = self.visualizer.plot_data.lock().unwrap();
-        let instance_buffer = callback_resources.get::<SpectrumInstanceBuffer>().unwrap();
-        let vertex_buffer = callback_resources.get::<SpectrumVertexBuffer>().unwrap();
-        let queue = callback_resources.get::<Queue>().unwrap();
-        let current_source = self.visualizer.audio_service.get_source();
-        let settings = &self.visualizer.data.read().unwrap().spectrum_settings;
-
-        let fft_target = self.visualizer.audio_service.get_fft(channel);
-        let mut fft_data = fft_target.as_slice();
-        let mut smoother = self.visualizer.smoother.lock().unwrap();
-
-        if let Some(smoother) = smoother.as_mut() {
-            fft_data = smoother.smooth_data(delta_t.as_secs_f32(), &fft_target);
-        }
-
-        let fft_output_size = fft_data.len();
-        let fft_size = fft_output_size * 2;
-        let skip = current_source
-            .calculate_buffer_beginning_skip_for(plot_data.x_axis.min, fft_size)
-            .saturating_sub(1);
-        let displayed_bins = current_source
-            .bin_of_frequency(plot_data.x_axis.max, fft_size)
-            .min(fft_output_size);
-        let bars_to_draw = displayed_bins - skip;
-        let mut instance_data = Vec::with_capacity(bars_to_draw);
-        let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1 + skip];
-
-        for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
-            let bin_freq = frequency_of_bin(i, current_source.sample_rate as usize, fft_size);
-            *item = [
-                plot_data.x_axis.gl_pos(bin_freq),
-                plot_data
-                    .x_axis
-                    .val_to_pos(bin_freq, info.viewport.min.x, info.viewport.max.x),
-            ];
-        }
-
-        let mut last_px_pos: Option<[f32; 2]> = None;
-        let mut acc = 0.0;
-        let mut coerced_bins = 0;
-
-        let mut bars_drawn = 0;
-        for (i, sample) in fft_data.iter().enumerate().skip(skip).take(bars_to_draw) {
-            let sample = scale_to_db(*sample);
-            let [gl_pos, px_pos] = position_array[i];
-            let [gl_next_pos, px_next_pos] = position_array[i + 1];
-            let mut gl_pos = gl_pos;
-            let mut v = sample;
-
-            if (px_pos - px_next_pos).abs() < MIN_BAR_WIDTH {
-                if let Some([gl_prev_pos, px_prev_pos]) = last_px_pos.as_ref() {
-                    let last_px_pos: f32 = *px_prev_pos;
-                    let last_gl_pos: f32 = *gl_prev_pos;
-                    acc += sample;
-                    coerced_bins += 1;
-
-                    if (px_next_pos - last_px_pos).abs() >= MIN_BAR_WIDTH {
-                        v = acc / coerced_bins as f32;
-                        gl_pos = last_gl_pos;
-                    } else {
-                        continue;
+            if curr_type != smoother_type {
+                *smoother = match smoother_type {
+                    SmootherType::ExponentialFalloff => {
+                        Some(Box::new(ExponentialFalloffSmoother::new()))
                     }
-                } else {
-                    acc = sample;
-                    coerced_bins = 1;
-                    last_px_pos = Some([gl_pos, px_pos]);
-                    continue;
+                    SmootherType::Multiplicative => Some(Box::new(MultiplicativeSmoother::new())),
+                    SmootherType::None => None,
                 }
             }
-            last_px_pos = None;
 
-            instance_data.push(BarInstanceData {
-                height: plot_data.y_axis.gl_pos(v),
-                x_1: gl_pos,
-                x_2: gl_next_pos,
-            });
+            if let Some(smoother) = smoother.as_mut() {
+                smoother.set_factor(smoother_factor);
+            }
 
-            bars_drawn += 1;
-        }
+            let delta_t = self.visualizer.last_draw.lock().unwrap().elapsed();
+            *self.visualizer.last_draw.lock().unwrap() = Instant::now();
 
-        queue.write_buffer(
-            uniform_buffer,
-            0,
-            bytemuck::bytes_of(&Uniforms {
-                color_end: self.color_end.to_normalized_gamma_f32(),
-                color_start: self.color_start.to_normalized_gamma_f32(),
-            }),
-        );
+            let channel = self.visualizer.channel;
+            let plot_data = self.visualizer.plot_data.lock().unwrap();
+            let current_source = self.visualizer.audio_service.get_source();
+            let settings = &self.visualizer.data.read().unwrap().spectrum_settings;
 
-        render_pass.set_bind_group(0, &bind_group.0, &[]);
+            let fft_target = self.visualizer.audio_service.get_fft(channel);
+            let mut fft_data = fft_target.as_slice();
 
-        if bars_drawn == 0 {
-            return;
-        }
+            if let Some(smoother) = smoother.as_mut() {
+                fft_data = smoother.smooth_data(delta_t.as_secs_f32(), &fft_target);
+            }
 
-        if settings.draw_type == SpectrumVisualizerType::Line {
-            let vertex_array: Vec<_> = instance_data
-                .windows(2)
-                .flat_map(|w| [[w[0].x_1, w[0].height], [w[1].x_1, w[1].height]])
-                .collect();
+            let fft_output_size = fft_data.len();
+            let fft_size = fft_output_size * 2;
+            let skip = current_source
+                .calculate_buffer_beginning_skip_for(plot_data.x_axis.min, fft_size)
+                .saturating_sub(1);
+            let displayed_bins = current_source
+                .bin_of_frequency(plot_data.x_axis.max, fft_size)
+                .min(fft_output_size);
+            let bars_to_draw = displayed_bins - skip;
+            let mut instance_data = Vec::with_capacity(bars_to_draw);
+            let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1 + skip];
 
-            queue.write_buffer(instance_buffer, 0, bytemuck::cast_slice(&vertex_array));
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-            render_pass.set_pipeline(line_fill_pipeline);
-            render_pass.draw(0..6u32, 0..(bars_drawn - 1));
+            for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
+                let bin_freq = frequency_of_bin(i, current_source.sample_rate as usize, fft_size);
+                *item = [
+                    plot_data.x_axis.gl_pos(bin_freq),
+                    plot_data
+                        .x_axis
+                        .val_to_pos(bin_freq, info.viewport.min.x, info.viewport.max.x),
+                ];
+            }
 
-            render_pass.set_vertex_buffer(0, instance_buffer.slice(..));
-            render_pass.set_pipeline(line_pipeline);
-            render_pass.draw(0..(bars_drawn - 1) * 2u32, 0..1);
-        } else {
-            queue.write_buffer(instance_buffer, 0, bytemuck::cast_slice(&instance_data));
-            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-            render_pass.set_pipeline(bar_pipeline);
-            render_pass.draw(0..6u32, 0..bars_drawn);
+            let mut last_px_pos: Option<[f32; 2]> = None;
+            let mut acc = 0.0;
+            let mut coerced_bins = 0;
+
+            let mut bars_drawn = 0;
+            for (i, sample) in fft_data.iter().enumerate().skip(skip).take(bars_to_draw) {
+                let sample = scale_to_db(*sample);
+                let [gl_pos, px_pos] = position_array[i];
+                let [gl_next_pos, px_next_pos] = position_array[i + 1];
+                let mut gl_pos = gl_pos;
+                let mut v = sample;
+
+                if (px_pos - px_next_pos).abs() < MIN_BAR_WIDTH {
+                    if let Some([gl_prev_pos, px_prev_pos]) = last_px_pos.as_ref() {
+                        let last_px_pos: f32 = *px_prev_pos;
+                        let last_gl_pos: f32 = *gl_prev_pos;
+                        acc += sample;
+                        coerced_bins += 1;
+
+                        if (px_next_pos - last_px_pos).abs() >= MIN_BAR_WIDTH {
+                            v = acc / coerced_bins as f32;
+                            gl_pos = last_gl_pos;
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        acc = sample;
+                        coerced_bins = 1;
+                        last_px_pos = Some([gl_pos, px_pos]);
+                        continue;
+                    }
+                }
+                last_px_pos = None;
+
+                instance_data.push(BarInstanceData {
+                    height: plot_data.y_axis.gl_pos(v),
+                    x_1: gl_pos,
+                    x_2: gl_next_pos,
+                });
+
+                bars_drawn += 1;
+            }
+
+            resources.queue.write_buffer(
+                &resources.uniform_buffer,
+                0,
+                bytemuck::bytes_of(&Uniforms {
+                    color_end: self.color_end.to_normalized_gamma_f32(),
+                    color_start: self.color_start.to_normalized_gamma_f32(),
+                }),
+            );
+
+            render_pass.set_bind_group(0, &resources.bind_group, &[]);
+
+            if bars_drawn == 0 {
+                return;
+            }
+
+            if settings.draw_type == SpectrumVisualizerType::Line {
+                let vertex_array: Vec<_> = instance_data
+                    .windows(2)
+                    .flat_map(|w| [[w[0].x_1, w[0].height], [w[1].x_1, w[1].height]])
+                    .collect();
+
+                resources.queue.write_buffer(
+                    &resources.instance_buffer,
+                    0,
+                    bytemuck::cast_slice(&vertex_array),
+                );
+                render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
+                render_pass.set_pipeline(&resources.line_fill_pipeline);
+                render_pass.draw(0..6u32, 0..(bars_drawn - 1));
+
+                render_pass.set_vertex_buffer(0, resources.instance_buffer.slice(..));
+                render_pass.set_pipeline(&resources.line_pipeline);
+                render_pass.draw(0..(bars_drawn - 1) * 2u32, 0..1);
+            } else {
+                resources.queue.write_buffer(
+                    &resources.instance_buffer,
+                    0,
+                    bytemuck::cast_slice(&instance_data),
+                );
+                render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
+                render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
+                render_pass.set_pipeline(&resources.bars_pipeline);
+                render_pass.draw(0..6u32, 0..bars_drawn);
+            }
         }
     }
 }

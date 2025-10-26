@@ -1,19 +1,19 @@
-use std::collections::HashMap;
 use crate::egui_tools::EguiRenderer;
+use crate::persistance::{Persistence, WINDOW_KEY};
+use crate::ui::visualizer::visualizer_widget::RenderArgs;
 use egui::{Context, IconData};
 use egui_wgpu::wgpu::SurfaceError;
 use egui_wgpu::{ScreenDescriptor, wgpu};
-use std::sync::Arc;
-use std::time::Instant;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
-use crate::persistance::{Persistence, WINDOW_KEY};
-use crate::ui::visualizer::visualizer_widget::RenderArgs;
+use winit::window::{Icon, Window, WindowId};
 
 pub struct AppState {
     pub device: wgpu::Device,
@@ -116,7 +116,7 @@ pub struct App {
     instance: wgpu::Instance,
     state: Option<AppState>,
     window: Option<Arc<Window>>,
-    _icon_data: IconData,
+    icon_data: IconData,
     persistence: Persistence,
     handler: Box<dyn AppHandler>,
     name: &'static str,
@@ -128,10 +128,7 @@ pub trait AppHandler {
 
     fn save(&mut self, persistence: &mut Persistence);
 
-    fn post_egui(
-        &mut self,
-        args: RenderArgs,
-    );
+    fn post_egui(&mut self, args: RenderArgs);
 }
 
 impl App {
@@ -148,7 +145,7 @@ impl App {
             instance,
             state: None,
             window: None,
-            _icon_data: icon,
+            icon_data: icon,
             persistence,
             last_save: Instant::now(),
         }
@@ -243,18 +240,14 @@ impl App {
                 &screen_descriptor,
             );
 
-            let callback_resources = &state.egui_renderer.renderer.callback_resources;
-            self.handler.post_egui(
-                RenderArgs {
-                    encoder: &mut encoder,
-                    window,
-                    queue: &state.queue,
-                    device: &state.device,
-                    resources: callback_resources,
-                    window_surface_view: &surface_view,
-                    screen_descriptor: &screen_descriptor,
-                }
-            );
+            self.handler.post_egui(RenderArgs {
+                encoder: &mut encoder,
+                window,
+                queue: &state.queue,
+                device: &state.device,
+                window_surface_view: &surface_view,
+                screen_descriptor: &screen_descriptor,
+            });
         }
 
         state.queue.submit(Some(encoder.finish()));
@@ -277,14 +270,15 @@ impl App {
         if let Ok(position) = position {
             debug!("Saving window position: {:?} {:?}", position, size);
             let window_data = WindowData {
-                windows: HashMap::from([
-                    ("main".into(), WindowRect {
+                windows: HashMap::from([(
+                    "main".into(),
+                    WindowRect {
                         x: position.x,
                         y: position.y,
                         width: size.width,
                         height: size.height,
-                    })
-                ]),
+                    },
+                )]),
             };
             self.persistence.set(WINDOW_KEY, &window_data);
         }
@@ -294,19 +288,25 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-
         let mut window_attributes = Window::default_attributes().with_title(self.name);
         if let Some(window_data) = self.persistence.get::<WindowData>(WINDOW_KEY)
-            && let Some(window_rect) = window_data.windows.get("main") {
-                debug!("Restoring window position: {:?}", window_rect);
-                window_attributes = window_attributes
-                    .with_inner_size(PhysicalSize::new(window_rect.width, window_rect.height))
-                    .with_position(PhysicalPosition::new(window_rect.x, window_rect.y));
-            }
+            && let Some(window_rect) = window_data.windows.get("main")
+        {
+            debug!("Restoring window position: {:?}", window_rect);
+            window_attributes = window_attributes
+                .with_inner_size(PhysicalSize::new(window_rect.width, window_rect.height))
+                .with_position(PhysicalPosition::new(window_rect.x, window_rect.y));
+        }
+        window_attributes = window_attributes.with_window_icon(Some(
+            Icon::from_rgba(
+                self.icon_data.rgba.clone(),
+                self.icon_data.width,
+                self.icon_data.height,
+            )
+            .unwrap(),
+        ));
 
-        let window = event_loop
-            .create_window(window_attributes)
-            .unwrap();
+        let window = event_loop.create_window(window_attributes).unwrap();
         pollster::block_on(self.set_window(window));
     }
 

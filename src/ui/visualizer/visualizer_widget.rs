@@ -1,14 +1,14 @@
 use crate::sound::audio_service::CHANNELS;
 use crate::ui::plot::{Plot, PlotData};
 use crate::wavesync::WaveSyncVisuals;
+use egui;
+use egui::FontId;
+use egui::emath::Align2;
+use egui::epaint;
 use egui::{Pos2, Rect, Response, Ui, Widget};
+use egui_wgpu::ScreenDescriptor;
 use egui_wgpu::wgpu;
 use wgpu::{CommandEncoder, Device, Queue, TextureView};
-use {egui};
-use egui::epaint;
-use egui::emath::Align2;
-use egui::FontId;
-use egui_wgpu::{CallbackResources, ScreenDescriptor};
 use winit::window::Window;
 
 pub struct RenderArgs<'a> {
@@ -16,7 +16,6 @@ pub struct RenderArgs<'a> {
     pub window: &'a Window,
     pub queue: &'a Queue,
     pub device: &'a Device,
-    pub resources: &'a CallbackResources,
     pub window_surface_view: &'a TextureView,
     pub screen_descriptor: &'a ScreenDescriptor,
 }
@@ -56,14 +55,14 @@ pub trait Visualizer: Send + Sync + 'static {
 
 /// Render callback for after the egui render pass, for additional render passes.
 pub trait PostEquiRender {
-    fn post_egui_render(&self, args: &mut RenderArgs) {}
+    fn post_egui_render(&self, _args: &mut RenderArgs) {}
 }
 
 pub struct VisualizerWidget<'a> {
     visualizer: Box<dyn Visualizer>,
     ctx: &'a egui::Context,
     wavesync_visuals: &'a WaveSyncVisuals,
-    cached_rect: &'a mut Rect,
+    cached_rect: Option<&'a mut Rect>,
 }
 
 impl<'a> VisualizerWidget<'a> {
@@ -71,13 +70,21 @@ impl<'a> VisualizerWidget<'a> {
         visualizer: Box<dyn Visualizer + 'static>,
         ctx: &'a egui::Context,
         wavesync_visuals: &'a WaveSyncVisuals,
-        rect: &'a mut Rect,
     ) -> Self {
         Self {
             visualizer,
             ctx,
             wavesync_visuals,
-            cached_rect: rect,
+            cached_rect: None,
+        }
+    }
+
+    pub fn view_rect(self, rect: &'a mut Rect) -> Self {
+        Self {
+            visualizer: self.visualizer,
+            ctx: self.ctx,
+            wavesync_visuals: self.wavesync_visuals,
+            cached_rect: Some(rect),
         }
     }
 }
@@ -92,7 +99,13 @@ impl<'a> Widget for VisualizerWidget<'a> {
         let content_rect = plot.show(ui);
 
         if let Some(err_message) = self.visualizer.error_message() {
-            ui.painter().text(content_rect.center(), Align2::CENTER_CENTER, err_message, FontId::default(), ui.visuals().text_color());
+            ui.painter().text(
+                content_rect.center(),
+                Align2::CENTER_CENTER,
+                err_message,
+                FontId::default(),
+                ui.visuals().text_color(),
+            );
         } else if let Some(callback) = self
             .visualizer
             .get_draw_callback(content_rect, self.wavesync_visuals)
@@ -100,7 +113,9 @@ impl<'a> Widget for VisualizerWidget<'a> {
             ui.painter().add(callback);
         }
 
-        self.cached_rect.clone_from(&content_rect);
+        if let Some(cached_rect) = self.cached_rect {
+            cached_rect.clone_from(&content_rect);
+        }
 
         let settings_rect = Rect::from_min_max(
             Pos2::new(content_rect.max.x - 22.0, content_rect.min.y + 2.0),

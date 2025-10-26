@@ -1,16 +1,16 @@
-use itertools::Itertools;
-use std::fs::File;
-use std::io::BufReader;
-use std::path::PathBuf;
 use crate::sound::audio_backend::{AudioBackend, OptionCaptureCallback};
 use crate::sound::audio_system::AudioSystem;
 use crate::sound::capture_source::CaptureSource;
 use crate::sound::{AudioBackendType, SampleFormat};
+use itertools::Itertools;
+use log::info;
+use rand::Rng;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use log::info;
-use rand::Rng;
 
 /// Used for testing purposes, to avoid having to have a real audio device.
 pub struct DummyAudioBackend {
@@ -18,7 +18,7 @@ pub struct DummyAudioBackend {
     audio_system: AudioSystem,
     capture_source: Arc<Mutex<CaptureSource>>,
     sequence_index: Arc<AtomicUsize>,
-    pub(crate) pattern_data: Arc<PatternData>
+    pub(crate) pattern_data: Arc<PatternData>,
 }
 
 pub struct PatternData {
@@ -27,13 +27,13 @@ pub struct PatternData {
     pub sound_index: AtomicUsize,
     pub current_sound_index: Mutex<Option<usize>>,
     pub sequencer_frequency: Mutex<f32>,
-    pub reader: Mutex<Option<hound::WavReader<BufReader<File>>>>
+    pub reader: Mutex<Option<hound::WavReader<BufReader<File>>>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TestPattern {
     WaveSynth,
-    SampleSound
+    SampleSound,
 }
 
 impl Default for DummyAudioBackend {
@@ -44,7 +44,6 @@ impl Default for DummyAudioBackend {
 
 impl DummyAudioBackend {
     pub fn new() -> Self {
-
         let mut test_sounds = vec![];
         if let Ok(dir) = std::fs::read_dir("test_sounds") {
             for entry in dir.flatten() {
@@ -81,8 +80,8 @@ impl DummyAudioBackend {
                 sound_index: Default::default(),
                 current_sound_index: Mutex::new(None),
                 sequencer_frequency: Mutex::new(100.0),
-                reader: Mutex::new(None)
-            })
+                reader: Mutex::new(None),
+            }),
         }
     }
 }
@@ -118,20 +117,24 @@ impl AudioBackend for DummyAudioBackend {
 
         thread::spawn(move || {
             loop {
-
                 if let Some(callback) = callback_weak.upgrade() {
                     let mut frame_l = vec![0.0; 960];
                     let mut frame_r = vec![0.0; 960];
                     let pattern = { *pattern_data.pattern.lock().unwrap() };
 
-
                     match pattern {
                         TestPattern::WaveSynth => {
-                            synthesize_frames(&mut frame_l, &mut frame_r, &sequence_index, &pattern_data.sequencer_frequency);
+                            synthesize_frames(
+                                &mut frame_l,
+                                &mut frame_r,
+                                &sequence_index,
+                                &pattern_data.sequencer_frequency,
+                            );
                         }
                         TestPattern::SampleSound => {
                             let sound_idx = pattern_data.sound_index.load(Ordering::Relaxed);
-                            let mut current_sound_idx = pattern_data.current_sound_index.lock().unwrap();
+                            let mut current_sound_idx =
+                                pattern_data.current_sound_index.lock().unwrap();
                             let mut reader = pattern_data.reader.lock().unwrap();
                             info!("{} {}", sound_idx, pattern_data.test_sounds.len());
                             if sound_idx < pattern_data.test_sounds.len() {
@@ -146,11 +149,7 @@ impl AudioBackend for DummyAudioBackend {
                                 if let Some(reader) = reader.as_mut() {
                                     let samples = reader.samples::<i32>();
                                     let b24_max = 0x7fffff;
-                                    for (l, r) in samples
-                                        .take(960)
-                                        .map(Result::unwrap)
-                                        .tuples()
-                                    {
+                                    for (l, r) in samples.take(960).map(Result::unwrap).tuples() {
                                         frame_l.push(l as f32 / b24_max as f32);
                                         frame_r.push(r as f32 / b24_max as f32);
                                     }
@@ -158,8 +157,6 @@ impl AudioBackend for DummyAudioBackend {
                             }
                         }
                     }
-
-
 
                     callback.lock().unwrap()(vec![frame_l, frame_r]);
                 } else {
@@ -177,7 +174,12 @@ impl AudioBackend for DummyAudioBackend {
     }
 }
 
-fn synthesize_frames(frame_l: &mut [f32], frame_r: &mut [f32], sequence_index: &AtomicUsize, sequencer_frequency: &Mutex<f32>) {
+fn synthesize_frames(
+    frame_l: &mut [f32],
+    frame_r: &mut [f32],
+    sequence_index: &AtomicUsize,
+    sequencer_frequency: &Mutex<f32>,
+) {
     let sequencer_frequency = { *sequencer_frequency.lock().unwrap() };
     let frequencies = vec![sequencer_frequency];
     let scalar: f32 = 1.0 / frequencies.len() as f32;
@@ -191,7 +193,8 @@ fn synthesize_frames(frame_l: &mut [f32], frame_r: &mut [f32], sequence_index: &
             let phase_offset = wave_length * 2.0 * std::f32::consts::PI * phase_offset;
 
             *l += (seq_l / wave_length * 2.0 * std::f32::consts::PI).sin() * scalar;
-            *r += ((seq_l + phase_offset) / wave_length * 2.0 * std::f32::consts::PI).sin() * scalar;
+            *r +=
+                ((seq_l + phase_offset) / wave_length * 2.0 * std::f32::consts::PI).sin() * scalar;
         }
     }
 }
