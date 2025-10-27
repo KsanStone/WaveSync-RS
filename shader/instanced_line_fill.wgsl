@@ -21,12 +21,18 @@ struct VertexOutput {
 fn vs_main(input: VertexInput) -> VertexOutput {
     var out: VertexOutput;
 
+    let y_floor = min(input.rect.y, input.rect.w) - 2.0;
+
     let x = input.rect.x + input.pos.x * (input.rect.z - input.rect.x);
     var y = 0.0;
-    if (input.pos.x == 0) {
-        y = -1.0 + input.pos.y * (input.rect.y + 1.0);
+    if (input.pos.y != 0.0) {
+        if (input.pos.x == 0) {
+            y = -1.0 + input.pos.y * (input.rect.y + 1.0);
+        } else {
+            y = -1.0 + input.pos.y * (input.rect.w + 1.0);
+        }
     } else {
-        y = -1.0 + input.pos.y * (input.rect.w + 1.0);
+        y = y_floor;
     }
 
     out.pos = vec4(x, y, 0.0, 1.0);
@@ -42,6 +48,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let factor = (input.height + 1) * 0.5;
     let inv_factor = 1.0 - factor;
-    let color = colors.start_color * factor + colors.end_color * inv_factor;
+    let color = colors.end_color * factor + colors.start_color * inv_factor;
     return vec4(color.xyz, 0.5);
 }

@@ -381,6 +381,14 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 .spectrum_settings
                 .smoother_type
         };
+        let plot_log = {
+            self.visualizer
+                .data
+                .read()
+                .unwrap()
+                .spectrum_settings
+                .frequency_axis_logarithmic
+        };
 
         if let Some(resources) = resources.as_ref() {
             let mut smoother = self.visualizer.smoother.lock().unwrap();
@@ -407,7 +415,8 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             *self.visualizer.last_draw.lock().unwrap() = Instant::now();
 
             let channel = self.visualizer.channel;
-            let plot_data = self.visualizer.plot_data.lock().unwrap();
+            let mut plot_data = self.visualizer.plot_data.lock().unwrap();
+            plot_data.x_axis.logarithmic = plot_log;
             let current_source = self.visualizer.audio_service.get_source();
             let settings = &self.visualizer.data.read().unwrap().spectrum_settings;
 
@@ -446,7 +455,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             let mut bars_drawn = 0;
             for (i, sample) in fft_data.iter().enumerate().skip(skip).take(bars_to_draw) {
-                let sample = scale_to_db(*sample);
+                let sample = scale_to_db(*sample).clamp(-150.0, 5.0);
                 let [gl_pos, px_pos] = position_array[i];
                 let [gl_next_pos, px_next_pos] = position_array[i + 1];
                 let mut gl_pos = gl_pos;

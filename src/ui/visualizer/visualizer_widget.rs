@@ -95,7 +95,7 @@ impl<'a> Widget for VisualizerWidget<'a> {
         let plot = Plot::new(&mut plot_data)
             .set_grid_color(self.wavesync_visuals.plot_grid())
             .set_label_color(ui.visuals().text_color())
-            .set_zero_line_color(self.wavesync_visuals.plot_grid_2());
+            .set_zero_line_color(self.wavesync_visuals.plot_grid_highlight());
         let content_rect = plot.show(ui);
 
         if let Some(err_message) = self.visualizer.error_message() {
@@ -155,8 +155,10 @@ macro_rules! impl_settings {
         }
 
         fn open_settings(&self) {
-            self.settings_open
-                .store(true, std::sync::atomic::Ordering::Release);
+            self.settings_open.store(
+                !self.settings_open.load(Ordering::Acquire),
+                Ordering::Release,
+            );
         }
     };
 }

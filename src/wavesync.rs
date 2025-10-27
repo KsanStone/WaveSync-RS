@@ -5,6 +5,7 @@ use crate::persistance::{APP_KEY, Persistence};
 use crate::sound;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::CHANNELS;
+use crate::ui::gradient::{Gradient, Stop};
 use crate::ui::visualizer::VisualizerType;
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
@@ -58,7 +59,7 @@ impl WaveSyncVisuals {
     }
 
     pub fn color_start(&self) -> Color32 {
-        self.theme.mauve
+        self.theme.base
     }
 
     pub fn color_end(&self) -> Color32 {
@@ -69,8 +70,16 @@ impl WaveSyncVisuals {
         self.theme.surface0
     }
 
-    pub fn plot_grid_2(&self) -> Color32 {
+    pub fn plot_grid_highlight(&self) -> Color32 {
         self.theme.surface2
+    }
+
+    pub fn spectrogram_gradient(&self) -> Gradient {
+        Gradient::new(vec![
+            Stop::new(0.0, self.theme.base),
+            Stop::new(1.0, self.theme.blue),
+        ])
+        .unwrap()
     }
 }
 

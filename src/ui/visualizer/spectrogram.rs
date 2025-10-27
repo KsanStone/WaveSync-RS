@@ -1,6 +1,6 @@
 use crate::sound::audio_service::{AudioService, CHANNELS};
 use crate::sound::{AudioChannel, scale_to_db};
-use crate::ui::gradient::{Gradient, Stop};
+use crate::ui::gradient::Gradient;
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
@@ -12,7 +12,6 @@ use crate::{create_shader, deref_arc, impl_settings};
 use circular_buffer::CircularBuffer;
 use egui;
 use egui::Ui;
-use egui::epaint::Color32;
 use egui::{ComboBox, PaintCallback, PaintCallbackInfo, Rect};
 use egui_wgpu::wgpu;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
@@ -112,15 +111,6 @@ impl Visualizer for SpectrogramVisualizer {
         }
     }
 
-    fn error_message(&self) -> Option<String> {
-        if self.audio_service.get_fft_size() > 2_usize.pow(15) {
-            return Some(
-                "Spectrogram visualizer does not support FFT sizes larger than 16k".to_string(),
-            );
-        }
-        None
-    }
-
     fn accept_fft(&self, fft_data: &[Vec<f32>; CHANNELS], fft_size: usize) {
         if fft_data.len() <= self.channel.get_index() {
             return;
@@ -137,10 +127,19 @@ impl Visualizer for SpectrogramVisualizer {
         buffer.push_back(fft_data.get(self.channel.get_index()).unwrap().clone());
     }
 
-    fn get_draw_callback(&self, rect: Rect, _visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
+    fn error_message(&self) -> Option<String> {
+        if self.audio_service.get_fft_size() > 2_usize.pow(15) {
+            return Some(
+                "Spectrogram visualizer does not support FFT sizes larger than 16k".to_string(),
+            );
+        }
+        None
+    }
+
+    fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
         Some(egui_wgpu::Callback::new_paint_callback(
             rect,
-            SpectrogramVisualizerCallback::new(self.clone()),
+            SpectrogramVisualizerCallback::new(self.clone(), visuals.spectrogram_gradient()),
         ))
     }
 
@@ -166,11 +165,15 @@ impl Visualizer for SpectrogramVisualizer {
 
 pub struct SpectrogramVisualizerCallback {
     visualizer: SpectrogramVisualizer,
+    gradient: Gradient,
 }
 
 impl SpectrogramVisualizerCallback {
-    pub(crate) fn new(visualizer: SpectrogramVisualizer) -> Self {
-        Self { visualizer }
+    pub(crate) fn new(visualizer: SpectrogramVisualizer, gradient: Gradient) -> Self {
+        Self {
+            visualizer,
+            gradient,
+        }
     }
 }
 
@@ -340,20 +343,12 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                     .store(true, Ordering::Release);
             }
 
-            let gradient = Gradient::new(vec![
-                Stop::new(0.00, Color32::from_rgb(10, 10, 30)), // deep blue-black
-                Stop::new(0.15, Color32::from_rgb(0, 30, 120)), // dark blue
-                Stop::new(0.35, Color32::from_rgb(0, 180, 255)), // cyan-blue
-                Stop::new(0.55, Color32::from_rgb(0, 255, 100)), // greenish
-                Stop::new(0.75, Color32::from_rgb(255, 255, 0)), // bright yellow
-                Stop::new(0.90, Color32::from_rgb(255, 120, 0)), // orange
-                Stop::new(1.00, Color32::from_rgb(255, 0, 30)), // red peak
-            ])
-            .unwrap();
-            if current_gradient.is_none() || *current_gradient.as_ref().unwrap() != gradient {
-                let gradient_data = gradient.pre_compute_lookup(GRADIENT_LOOKUP_LENGTH as usize);
+            if current_gradient.is_none() || *current_gradient.as_ref().unwrap() != self.gradient {
+                let gradient_data = self
+                    .gradient
+                    .pre_compute_lookup(GRADIENT_LOOKUP_LENGTH as usize);
                 write_1d_texture(queue, &resources.gradient_texture, &gradient_data);
-                *current_gradient = Some(gradient);
+                *current_gradient = Some(self.gradient.clone());
             }
 
             let mut send_buffer = self.visualizer.fft_send_buffer.lock().unwrap();
