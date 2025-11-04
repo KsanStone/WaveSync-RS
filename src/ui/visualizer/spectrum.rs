@@ -9,13 +9,15 @@ use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, catmull_rom_spline, crea
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 use crate::{create_shader, deref_arc, impl_settings};
 use egui;
-use egui::Ui;
-use egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
+use egui::{Color32, DragValue, PaintCallback, PaintCallbackInfo, Rect, Sense, Vec2};
+use egui::{Slider, Ui};
+use egui_double_slider::DoubleSlider;
 use egui_wgpu::wgpu;
 use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use serde::{Deserialize, Serialize};
+use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -28,7 +30,6 @@ deref_arc!(SpectrumVisualizer);
 
 pub struct Inner {
     audio_service: AudioService,
-    plot_data: Mutex<PlotData>,
     data: Arc<RwLock<WaveSyncAppData>>,
     smoother: Mutex<Option<Box<dyn FloatArraySmoother>>>,
     settings_open: AtomicBool,
@@ -43,6 +44,9 @@ pub struct SpectrumVisualizerSettings {
     pub smoother_type: SmootherType,
     pub smoother_factor: f32,
     pub frequency_axis_logarithmic: bool,
+    pub smooth_line: bool,
+    pub freq_min: u32,
+    pub freq_max: u32,
 }
 
 impl Default for SpectrumVisualizerSettings {
@@ -52,6 +56,9 @@ impl Default for SpectrumVisualizerSettings {
             smoother_type: SmootherType::Multiplicative,
             smoother_factor: 0.7,
             frequency_axis_logarithmic: true,
+            smooth_line: true,
+            freq_min: 0,
+            freq_max: 20000,
         }
     }
 }
@@ -78,10 +85,6 @@ impl SpectrumVisualizer {
         Self(Arc::new(Inner {
             audio_service,
             channel,
-            plot_data: Mutex::new(PlotData::from_axis(
-                Axis::logarithmic(12.0, 20000.0),
-                Axis::linear(-100.0, 0.0),
-            )),
             data,
             smoother: Mutex::new(None),
             settings_open: Default::default(),
@@ -93,7 +96,13 @@ impl SpectrumVisualizer {
 
 impl Visualizer for SpectrumVisualizer {
     fn get_plot_data(&self) -> PlotData {
-        self.plot_data.lock().unwrap().clone()
+        let settings = &self.data.read().unwrap().spectrum_settings;
+        let mut data = PlotData::from_axis(
+            Axis::linear(settings.freq_min as f32, settings.freq_max as f32),
+            Axis::linear(-100.0, 0.0),
+        );
+        data.x_axis.logarithmic = settings.frequency_axis_logarithmic;
+        data
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
@@ -105,7 +114,6 @@ impl Visualizer for SpectrumVisualizer {
 
     impl_settings!("Spectrum Settings", ui, this, {
         let settings = &mut this.data.write().unwrap().spectrum_settings;
-        let mut plot_data = this.plot_data.lock().unwrap();
 
         ui.horizontal(|ui| {
             ui.label("Render mode: ");
@@ -123,6 +131,11 @@ impl Visualizer for SpectrumVisualizer {
                         "Line",
                     );
                 });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Smooth line: ");
+            ui.checkbox(&mut settings.smooth_line, "");
         });
 
         ui.horizontal(|ui| {
@@ -147,7 +160,6 @@ impl Visualizer for SpectrumVisualizer {
                         settings.frequency_axis_logarithmic = false;
                     }
                 });
-            plot_data.x_axis.logarithmic = settings.frequency_axis_logarithmic;
         });
 
         ui.horizontal(|ui| {
@@ -171,11 +183,50 @@ impl Visualizer for SpectrumVisualizer {
 
         ui.style_mut().spacing.slider_width = 150.0;
         ui.add(
-            egui::Slider::new(&mut settings.smoother_factor, 0.0..=1.0)
+            Slider::new(&mut settings.smoother_factor, 0.0..=1.0)
                 .text("Factor")
                 .min_decimals(3)
                 .step_by(0.005),
         );
+
+        let full_range = 0u32..=20_000u32;
+        let min_sep = 500u32;
+
+        ui.horizontal(|ui| {
+            ui.label("Frequency range:");
+
+            let drag_width =
+                ui.fonts(|f| f.glyph_width(&egui::TextStyle::Body.resolve(ui.style()), '0')) * 10.0;
+
+            ui.add_sized(
+                [drag_width, 0.0],
+                DragValue::new(&mut settings.freq_min)
+                    .range(full_range.clone())
+                    .speed(10.0)
+                    .suffix(" Hz"),
+            );
+
+            ui.add(
+                DoubleSlider::new(
+                    &mut settings.freq_min,
+                    &mut settings.freq_max,
+                    full_range.clone(),
+                )
+                .separation_distance(min_sep)
+                .width(150.0),
+            );
+
+            ui.add_sized(
+                [drag_width, 0.0],
+                DragValue::new(&mut settings.freq_max)
+                    .range(full_range.clone())
+                    .speed(10.0)
+                    .suffix(" Hz"),
+            );
+        });
+
+        settings.freq_max = settings.freq_max.clamp(min_sep, *full_range.end());
+        settings.freq_min = settings.freq_min.clamp(0, settings.freq_max.saturating_sub(min_sep));
     });
 }
 
@@ -366,6 +417,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         _callback_resources: &CallbackResources,
     ) {
         let resources = self.visualizer.render_resources.lock().unwrap();
+        let plot_data = self.visualizer.get_plot_data();
         let smoother_factor = {
             self.visualizer
                 .data
@@ -381,14 +433,6 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 .unwrap()
                 .spectrum_settings
                 .smoother_type
-        };
-        let plot_log = {
-            self.visualizer
-                .data
-                .read()
-                .unwrap()
-                .spectrum_settings
-                .frequency_axis_logarithmic
         };
 
         if let Some(resources) = resources.as_ref() {
@@ -416,8 +460,6 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             *self.visualizer.last_draw.lock().unwrap() = Instant::now();
 
             let channel = self.visualizer.channel;
-            let mut plot_data = self.visualizer.plot_data.lock().unwrap();
-            plot_data.x_axis.logarithmic = plot_log;
             let current_source = self.visualizer.audio_service.get_source();
             let settings = &self.visualizer.data.read().unwrap().spectrum_settings;
 
@@ -506,12 +548,14 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             if settings.draw_type == SpectrumVisualizerType::Line {
                 let px_width = 2.0 / info.viewport.width();
-                let position_data = catmull_rom_spline(
-                    &position_data,
-                    MIN_SMOOTHED_WIDTH,
-                    px_width,
-                    MIN_SMOOTHED_WIDTH * px_width,
-                );
+                if settings.smooth_line {
+                    position_data = catmull_rom_spline(
+                        &position_data,
+                        MIN_SMOOTHED_WIDTH,
+                        px_width,
+                        MIN_SMOOTHED_WIDTH * px_width,
+                    );
+                }
 
                 let vertex_array: Vec<_> = position_data
                     .windows(2)

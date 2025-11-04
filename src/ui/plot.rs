@@ -141,10 +141,10 @@ impl Axis {
             }
 
             // Ensure endpoints
-            if *major_ticks.first().unwrap() != self.min {
+            if major_ticks.is_empty() || *major_ticks.first().unwrap() != self.min {
                 major_ticks.insert(0, self.min);
             }
-            if *major_ticks.last().unwrap() != self.max {
+            if major_ticks.is_empty() || *major_ticks.last().unwrap() != self.max {
                 major_ticks.push(self.max);
             }
         } else {
@@ -173,7 +173,7 @@ impl Axis {
                 i += 1.0
             }
 
-            if (major_ticks[0] - self.min).abs() > 0.001 {
+            if major_ticks.is_empty() || (major_ticks[0] - self.min).abs() > 0.001 {
                 major_ticks.insert(0, self.min);
             }
         }

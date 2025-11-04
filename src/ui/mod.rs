@@ -315,7 +315,7 @@ pub fn catmull_rom_spline(
 
     // Pad the ends to keep first/last visible
     let mut padded = Vec::with_capacity(n + 2);
-    padded.push(points[0]);
+    padded.push([points[0][0] - px_width * 50.0, points[0][1]]);
     padded.extend_from_slice(points);
     padded.push(points[n - 1]);
 
