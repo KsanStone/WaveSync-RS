@@ -5,7 +5,7 @@ use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
 use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, create_pipeline};
+use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, catmull_rom_spline, create_pipeline};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 use crate::{create_shader, deref_arc, impl_settings};
 use egui;
@@ -22,6 +22,7 @@ use std::time::Instant;
 
 pub const MAX_BARS: u64 = 4096;
 pub const MIN_BAR_WIDTH: f32 = 1.0;
+pub const MIN_SMOOTHED_WIDTH: f32 = 4.0;
 
 deref_arc!(SpectrumVisualizer);
 
@@ -436,7 +437,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 .bin_of_frequency(plot_data.x_axis.max, fft_size)
                 .min(fft_output_size);
             let bars_to_draw = displayed_bins - skip;
-            let mut instance_data = Vec::with_capacity(bars_to_draw);
+            let mut position_data = Vec::with_capacity(bars_to_draw);
             let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1 + skip];
 
             for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
@@ -457,7 +458,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             for (i, sample) in fft_data.iter().enumerate().skip(skip).take(bars_to_draw) {
                 let sample = scale_to_db(*sample).clamp(-150.0, 5.0);
                 let [gl_pos, px_pos] = position_array[i];
-                let [gl_next_pos, px_next_pos] = position_array[i + 1];
+                let [_gl_next_pos, px_next_pos] = position_array[i + 1];
                 let mut gl_pos = gl_pos;
                 let mut v = sample;
 
@@ -483,11 +484,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 }
                 last_px_pos = None;
 
-                instance_data.push(BarInstanceData {
-                    height: plot_data.y_axis.gl_pos(v),
-                    x_1: gl_pos,
-                    x_2: gl_next_pos,
-                });
+                position_data.push([gl_pos, plot_data.y_axis.gl_pos(v)]);
 
                 bars_drawn += 1;
             }
@@ -508,10 +505,19 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             }
 
             if settings.draw_type == SpectrumVisualizerType::Line {
-                let vertex_array: Vec<_> = instance_data
+                let px_width = 2.0 / info.viewport.width();
+                let position_data = catmull_rom_spline(
+                    &position_data,
+                    MIN_SMOOTHED_WIDTH,
+                    px_width,
+                    MIN_SMOOTHED_WIDTH * px_width,
+                );
+
+                let vertex_array: Vec<_> = position_data
                     .windows(2)
-                    .flat_map(|w| [[w[0].x_1, w[0].height], [w[1].x_1, w[1].height]])
+                    .flat_map(|w| [[w[0][0], w[0][1]], [w[1][0], w[1][1]]])
                     .collect();
+                let count = (position_data.len() as u32).saturating_sub(1);
 
                 resources.queue.write_buffer(
                     &resources.instance_buffer,
@@ -521,12 +527,22 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
                 render_pass.set_pipeline(&resources.line_fill_pipeline);
-                render_pass.draw(0..6u32, 0..(bars_drawn - 1));
+                render_pass.draw(0..6u32, 0..(count - 1));
 
                 render_pass.set_vertex_buffer(0, resources.instance_buffer.slice(..));
                 render_pass.set_pipeline(&resources.line_pipeline);
-                render_pass.draw(0..(bars_drawn - 1) * 2u32, 0..1);
+                render_pass.draw(0..(count - 1) * 2u32, 0..1);
             } else {
+                let instance_data: Vec<_> = position_data
+                    .windows(2)
+                    .map(|w| BarInstanceData {
+                        height: w[0][1],
+                        x_1: w[0][0],
+                        x_2: w[1][0],
+                    })
+                    .collect();
+                let count = instance_data.len() as u32;
+
                 resources.queue.write_buffer(
                     &resources.instance_buffer,
                     0,
@@ -535,7 +551,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
                 render_pass.set_pipeline(&resources.bars_pipeline);
-                render_pass.draw(0..6u32, 0..bars_drawn);
+                render_pass.draw(0..6u32, 0..count);
             }
         }
     }

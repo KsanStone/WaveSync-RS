@@ -301,3 +301,62 @@ pub fn viewport(rect: Rect, screen_descriptor: &ScreenDescriptor, pass: &mut Ren
         1.0,
     );
 }
+
+pub fn catmull_rom_spline(
+    points: &[[f32; 2]],
+    px_per_point: f32,
+    px_width: f32,
+    min_width: f32,
+) -> Vec<[f32; 2]> {
+    let n = points.len();
+    if n < 2 {
+        return points.to_vec();
+    }
+
+    // Pad the ends to keep first/last visible
+    let mut padded = Vec::with_capacity(n + 2);
+    padded.push(points[0]);
+    padded.extend_from_slice(points);
+    padded.push(points[n - 1]);
+
+    let mut result = Vec::new();
+    result.push(points[0]); // explicitly keep first point
+
+    for i in 0..padded.len() - 3 {
+        let p0 = padded[i];
+        let p1 = padded[i + 1];
+        let p2 = padded[i + 2];
+        let p3 = padded[i + 3];
+
+        let seg_width = (p2[0] - p1[0]).abs();
+        if seg_width < min_width {
+            result.extend_from_slice(&padded[i + 2..padded.len() - 1]);
+            break;
+        }
+
+        let samples_per_segment = ((seg_width / px_width) * px_per_point).max(1.0).round() as usize;
+
+        for j in 1..=samples_per_segment {
+            let t = j as f32 / samples_per_segment as f32;
+            let t2 = t * t;
+            let t3 = t2 * t;
+
+            let x = 0.5
+                * ((2.0 * p1[0])
+                    + (-p0[0] + p2[0]) * t
+                    + (2.0 * p0[0] - 5.0 * p1[0] + 4.0 * p2[0] - p3[0]) * t2
+                    + (-p0[0] + 3.0 * p1[0] - 3.0 * p2[0] + p3[0]) * t3);
+
+            let y = 0.5
+                * ((2.0 * p1[1])
+                    + (-p0[1] + p2[1]) * t
+                    + (2.0 * p0[1] - 5.0 * p1[1] + 4.0 * p2[1] - p3[1]) * t2
+                    + (-p0[1] + 3.0 * p1[1] - 3.0 * p2[1] + p3[1]) * t3);
+
+            result.push([x, y]);
+        }
+    }
+
+    result.push(points[n - 1]);
+    result
+}

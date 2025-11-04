@@ -34,5 +34,5 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let factor = (input.height + 1) * 0.5;
     let inv_factor = 1.0 - factor;
-    return colors.start_color * factor + colors.end_color * inv_factor;
+    return colors.end_color * factor + colors.start_color * inv_factor;
 }
