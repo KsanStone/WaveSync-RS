@@ -5,19 +5,20 @@ use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
 use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::ui::{QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, catmull_rom_spline, create_pipeline};
+use crate::ui::{
+    QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, catmull_rom_spline, create_pipeline,
+    freq_spectrum_select, log_axis_sel,
+};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 use crate::{create_shader, deref_arc, impl_settings};
 use egui;
-use egui::{Color32, DragValue, PaintCallback, PaintCallbackInfo, Rect, Sense, Vec2};
+use egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
 use egui::{Slider, Ui};
-use egui_double_slider::DoubleSlider;
 use egui_wgpu::wgpu;
 use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::wgpu::{CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use serde::{Deserialize, Serialize};
-use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -140,26 +141,7 @@ impl Visualizer for SpectrumVisualizer {
 
         ui.horizontal(|ui| {
             ui.label("Frequency axis: ");
-            egui::ComboBox::from_id_salt("freq_axis")
-                .selected_text(if settings.frequency_axis_logarithmic {
-                    "Logarithmic"
-                } else {
-                    "Linear"
-                })
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(settings.frequency_axis_logarithmic, "Logarithmic")
-                        .clicked()
-                    {
-                        settings.frequency_axis_logarithmic = true;
-                    }
-                    if ui
-                        .selectable_label(!settings.frequency_axis_logarithmic, "Linear")
-                        .clicked()
-                    {
-                        settings.frequency_axis_logarithmic = false;
-                    }
-                });
+            log_axis_sel(ui, &mut settings.frequency_axis_logarithmic);
         });
 
         ui.horizontal(|ui| {
@@ -189,44 +171,11 @@ impl Visualizer for SpectrumVisualizer {
                 .step_by(0.005),
         );
 
-        let full_range = 0u32..=20_000u32;
-        let min_sep = 500u32;
-
         ui.horizontal(|ui| {
             ui.label("Frequency range:");
-
-            let drag_width =
-                ui.fonts(|f| f.glyph_width(&egui::TextStyle::Body.resolve(ui.style()), '0')) * 10.0;
-
-            ui.add_sized(
-                [drag_width, 0.0],
-                DragValue::new(&mut settings.freq_min)
-                    .range(full_range.clone())
-                    .speed(10.0)
-                    .suffix(" Hz"),
-            );
-
-            ui.add(
-                DoubleSlider::new(
-                    &mut settings.freq_min,
-                    &mut settings.freq_max,
-                    full_range.clone(),
-                )
-                .separation_distance(min_sep)
-                .width(150.0),
-            );
-
-            ui.add_sized(
-                [drag_width, 0.0],
-                DragValue::new(&mut settings.freq_max)
-                    .range(full_range.clone())
-                    .speed(10.0)
-                    .suffix(" Hz"),
-            );
+            let f_max = this.audio_service.get_max_freq();
+            freq_spectrum_select(ui, &mut settings.freq_min, &mut settings.freq_max, f_max);
         });
-
-        settings.freq_max = settings.freq_max.clamp(min_sep, *full_range.end());
-        settings.freq_min = settings.freq_min.clamp(0, settings.freq_max.saturating_sub(min_sep));
     });
 }
 

@@ -355,4 +355,10 @@ impl Inner {
     pub fn get_last_frame_size(&self) -> u64 {
         self.last_frame_size.load(Ordering::Acquire)
     }
+
+    /// Return the freq present in the last fft bin
+    /// based on the current sources' sample rate
+    pub fn get_max_freq(&self) -> u32 {
+        self.get_source().calculate_nyquist_frequency() as u32
+    }
 }

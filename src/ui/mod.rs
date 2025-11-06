@@ -1,4 +1,5 @@
-use egui::Rect;
+use egui::{ComboBox, DragValue, Rect, Ui};
+use egui_double_slider::DoubleSlider;
 use egui_wgpu::ScreenDescriptor;
 use egui_wgpu::wgpu;
 use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
@@ -283,7 +284,7 @@ pub fn write_2d_texture_row(
 
     // Size to write
     let copy_size = wgpu::Extent3d {
-        width: row.len() as u32,
+        width: (row.len() / 4) as u32,
         height: 1,
         depth_or_array_layers: 1,
     };
@@ -359,4 +360,49 @@ pub fn catmull_rom_spline(
 
     result.push(points[n - 1]);
     result
+}
+
+pub fn log_axis_sel(ui: &mut Ui, is_log: &mut bool) {
+    ComboBox::from_id_salt("freq_axis")
+        .selected_text(if *is_log { "Logarithmic" } else { "Linear" })
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(*is_log, "Logarithmic").clicked() {
+                *is_log = true;
+            }
+            if ui.selectable_label(!*is_log, "Linear").clicked() {
+                *is_log = false;
+            }
+        });
+}
+
+pub fn freq_spectrum_select(ui: &mut Ui, min: &mut u32, max: &mut u32, f_max: u32) {
+    let full_range = 0u32..=f_max;
+    let min_sep = 500u32;
+
+    let drag_width =
+        ui.fonts(|f| f.glyph_width(&egui::TextStyle::Body.resolve(ui.style()), '0')) * 10.0;
+
+    ui.add_sized(
+        [drag_width, 18.0],
+        DragValue::new(min)
+            .range(full_range.clone())
+            .speed(10.0)
+            .suffix(" Hz"),
+    );
+
+    ui.add(
+        DoubleSlider::new(min, max, full_range.clone())
+            .separation_distance(min_sep)
+            .width(150.0),
+    );
+
+    ui.add_sized(
+        [drag_width, 18.0],
+        DragValue::new(max)
+            .range(full_range.clone())
+            .speed(10.0)
+            .suffix(" Hz"),
+    );
+    *max = (*max).clamp(min_sep, *full_range.end());
+    *min = (*min).clamp(0, max.saturating_sub(min_sep));
 }

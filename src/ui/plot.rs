@@ -206,6 +206,7 @@ impl Axis {
         self.val_to_pos(value, 0.0, 1.0)
     }
 
+    /// map a [0, 1] position to this axis' value
     pub fn norm_pos_to_val(&self, value: f32) -> f32 {
         if !self.logarithmic {
             self.min + value * (self.max - self.min)

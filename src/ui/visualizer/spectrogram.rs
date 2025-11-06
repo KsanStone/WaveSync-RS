@@ -5,7 +5,8 @@ use crate::ui::plot::{Axis, PlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
     FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, bind_buff, create_bind_group_with_layout,
-    create_pipeline, create_texture, write_1d_texture, write_2d_texture_row,
+    create_pipeline, create_texture, freq_spectrum_select, log_axis_sel, write_1d_texture,
+    write_2d_texture_row,
 };
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 use crate::{create_shader, deref_arc, impl_settings};
@@ -88,6 +89,9 @@ impl SpectrogramVisualizer {
 pub struct SpectrogramSettings {
     pub is_vertical: bool,
     pub shown_duration: Duration,
+    pub freq_min: u32,
+    pub freq_max: u32,
+    pub frequency_axis_logarithmic: bool,
 }
 
 impl Default for SpectrogramSettings {
@@ -95,6 +99,9 @@ impl Default for SpectrogramSettings {
         Self {
             is_vertical: true,
             shown_duration: Duration::from_secs(10),
+            freq_min: 20,
+            freq_max: 20000,
+            frequency_axis_logarithmic: true,
         }
     }
 }
@@ -103,7 +110,8 @@ impl Visualizer for SpectrogramVisualizer {
     fn get_plot_data(&self) -> PlotData {
         let settings = &self.data.read().unwrap().spectrogram_settings;
         let db_axis = Axis::linear(-100.0, 0.0);
-        let freq_axis = Axis::logarithmic(12.0, 20000.0);
+        let mut freq_axis = Axis::linear(settings.freq_min as f32, settings.freq_max as f32);
+        freq_axis.logarithmic = settings.frequency_axis_logarithmic;
         if settings.is_vertical {
             PlotData::from_axis(freq_axis, db_axis)
         } else {
@@ -128,9 +136,9 @@ impl Visualizer for SpectrogramVisualizer {
     }
 
     fn error_message(&self) -> Option<String> {
-        if self.audio_service.get_fft_size() > 2_usize.pow(15) {
+        if self.audio_service.get_fft_size() > 2_usize.pow(19) {
             return Some(
-                "Spectrogram visualizer does not support FFT sizes larger than 16k".to_string(),
+                "Spectrogram visualizer does not support FFT sizes larger than 65k".to_string(),
             );
         }
         None
@@ -159,6 +167,17 @@ impl Visualizer for SpectrogramVisualizer {
                     ui.selectable_value(&mut settings.is_vertical, true, "Vertical");
                     ui.selectable_value(&mut settings.is_vertical, false, "Horizontal");
                 });
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Frequency range:");
+            let f_max = this.audio_service.get_max_freq();
+            freq_spectrum_select(ui, &mut settings.freq_min, &mut settings.freq_max, f_max);
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Frequency axis: ");
+            log_axis_sel(ui, &mut settings.frequency_axis_logarithmic);
         });
     });
 }
@@ -191,7 +210,8 @@ struct RenderResources {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Uniforms {
-    pub size: [i32; 2],
+    pub width: i32,
+    pub height: i32,
     pub head_offset: i32,
     pub buffer_size: i32,
     pub is_vertical: i32,
@@ -251,9 +271,9 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             let (storage_texture, storage_tex_view, storage_tex_bind_ty) = create_texture(
                 "spectrogram_texture",
                 device,
-                self.visualizer.fft_buffer_size.load(Ordering::Acquire) as u32,
+                self.visualizer.fft_buffer_size.load(Ordering::Acquire) as u32 / 4,
                 buff_length as u32,
-                wgpu::TextureFormat::R32Float,
+                wgpu::TextureFormat::Rgba32Float,
                 false,
             );
 
@@ -397,7 +417,8 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 &resources.uniform_buffer,
                 0,
                 bytemuck::cast_slice(&[Uniforms {
-                    size: [info.viewport.width() as i32, info.viewport.height() as i32],
+                    width: info.viewport.width() as i32,
+                    height: info.viewport.height() as i32,
                     head_offset: head as i32,
                     buffer_size: fft_buffer_length as i32,
                     is_vertical: settings.is_vertical as i32,
@@ -409,8 +430,8 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             let fft_size = self.visualizer.audio_service.get_fft_size();
 
             for i in 0..frequency_axis_spectrogram_width as usize {
-                let freq =
-                    frequency_axis.norm_pos_to_val(i as f32 / frequency_axis_spectrogram_width);
+                let freq = frequency_axis
+                    .norm_pos_to_val(i as f32 / (frequency_axis_spectrogram_width - 1.0).max(1.0));
                 let position_in_buffer = source.bin_of_frequency(freq, fft_size);
                 pos_map.push(position_in_buffer as i32);
             }

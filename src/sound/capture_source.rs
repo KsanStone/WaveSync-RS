@@ -62,4 +62,8 @@ impl CaptureSource {
         let sample_t = samples as f32 / self.sample_rate as f32;
         1.0 / sample_t
     }
+
+    pub fn calculate_nyquist_frequency(&self) -> f32 {
+        self.sample_rate as f32 / 2.0
+    }
 }

@@ -83,7 +83,7 @@ pub fn scale_to_db(value: f32) -> f32 {
 /// Calculate the bin index that contains the frequency.
 /// Rounds down.
 pub fn bin_of_frequency(frequency: f32, rate: usize, fft_size: usize) -> usize {
-    (frequency * fft_size as f32 / rate as f32).round() as usize
+    (frequency * fft_size as f32 / rate as f32) as usize
 }
 
 pub fn estimate_frequency_peak(magnitudes: &[f32], sample_rate: usize) -> Option<FftPeak> {
