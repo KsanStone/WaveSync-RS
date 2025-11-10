@@ -1,5 +1,7 @@
 use crate::sound::capture_source::CaptureSource;
 use crate::sound::cpal_audio_backend::CpalAudioBackend;
+use crate::sound::loudness::LoudnessMeter;
+use crate::sound::loudness::rms::RmsLoudnessMeter;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
@@ -50,6 +52,7 @@ impl AudioService {
             fft_window: Mutex::new(FftWindow::new(WindowMethod::Hamming)),
             available_sources: Mutex::new(vec![]),
             fft_listeners: Mutex::new(vec![]),
+            loudness_meter: Mutex::new(Box::new(RmsLoudnessMeter::new())),
         }))
     }
 
@@ -117,6 +120,7 @@ pub struct Inner {
     fft_plan: Mutex<Arc<dyn rustfft::Fft<f32>>>,
     fft_window: Mutex<FftWindow>,
     fft_listeners: Mutex<Vec<Box<dyn Visualizer>>>,
+    loudness_meter: Mutex<Box<dyn LoudnessMeter>>,
 }
 
 // TODO: Ensure that we clone fft and audio buffers as little as possible.
@@ -188,6 +192,12 @@ impl Inner {
         self.samples_written
             .fetch_add(samples[0].len() as u64, Ordering::Release);
         self.do_fft(fft_channels);
+        self.do_loudness_calc(&samples);
+    }
+
+    fn do_loudness_calc(&self, samples: &[Vec<f32>]) {
+        let mut loudness_meter = self.loudness_meter.lock().unwrap();
+        loudness_meter.process_frame(samples);
     }
 
     fn do_fft(&self, channels: usize) {
@@ -360,5 +370,10 @@ impl Inner {
     /// based on the current sources' sample rate
     pub fn get_max_freq(&self) -> u32 {
         self.get_source().calculate_nyquist_frequency() as u32
+    }
+
+    pub fn get_loudness_values(&self) -> Vec<f32> {
+        let meter = self.loudness_meter.lock().unwrap();
+        meter.get_loudness()
     }
 }

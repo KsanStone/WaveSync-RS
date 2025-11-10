@@ -132,12 +132,7 @@ impl AudioBackend for CpalAudioBackend {
             .input_devices
             .iter()
             .enumerate()
-            .filter(|(_, d)| {
-                #[cfg(target_os = "macos")]
-                return d.1;
-                #[cfg(not(target_os = "macos"))]
-                return !d.1;
-            })
+            .filter(|(_, d)| d.1)
             .filter_map(|(i, device)| {
                 device
                     .0

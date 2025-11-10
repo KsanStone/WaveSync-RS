@@ -4,6 +4,8 @@ use crate::ui::visualizer::spectrum::SmootherType;
 pub struct MultiplicativeSmoother {
     factor: f32,
     current_state: Vec<f32>,
+    pub min: f32,
+    pub max: f32,
 }
 
 impl Default for MultiplicativeSmoother {
@@ -17,6 +19,8 @@ impl MultiplicativeSmoother {
         Self {
             factor: 0.5,
             current_state: vec![],
+            min: 0.0,
+            max: 1.0,
         }
     }
 }
@@ -39,7 +43,7 @@ impl FloatArraySmoother for MultiplicativeSmoother {
         let dt = (delta_t * 100.0).clamp(0.0, 1.0);
 
         for (i, item) in self.current_state.iter_mut().enumerate() {
-            *item = (*item + (recent_data[i] - *item) * f * dt).clamp(0.0, 1.0);
+            *item = (*item + (recent_data[i] - *item) * f * dt).clamp(self.min, self.max);
         }
 
         &self.current_state

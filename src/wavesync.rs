@@ -6,6 +6,7 @@ use crate::sound;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::CHANNELS;
 use crate::ui::gradient::{Gradient, Stop};
+use crate::ui::loudness_indicator::LoudnessIndicator;
 use crate::ui::visualizer::VisualizerType;
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
@@ -36,6 +37,7 @@ pub struct WaveSync {
     visuals: WaveSyncVisuals,
     data: Arc<RwLock<WaveSyncAppData>>,
     visualizer_bounds: VisualizerBoundCache,
+    loudness_indicator: LoudnessIndicator,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -133,6 +135,7 @@ impl WaveSync {
             },
             data,
             visualizer_bounds: Default::default(),
+            loudness_indicator: LoudnessIndicator::new(),
         }
     }
 
@@ -256,6 +259,7 @@ impl WaveSync {
 
 impl AppHandler for WaveSync {
     fn update(&mut self, ctx: &egui::Context) {
+        let delta_t = self.last_update.elapsed().as_secs_f32();
         self.last_update = Instant::now();
         catppuccin_egui::set_theme(ctx, self.visuals.theme);
         ctx.request_repaint();
@@ -310,6 +314,12 @@ impl AppHandler for WaveSync {
                         )
                         .ui(ui);
                     }
+
+                    ui.add(self.loudness_indicator.ui(
+                        &self.audio_service.get_loudness_values(),
+                        delta_t,
+                        &self.visuals,
+                    ));
                 });
             });
 

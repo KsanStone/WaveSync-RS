@@ -5,6 +5,7 @@ use egui_wgpu::wgpu;
 use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 
 pub mod gradient;
+pub mod loudness_indicator;
 pub mod plot;
 pub mod visualizer;
 
