@@ -6,7 +6,7 @@ use crate::sound;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::CHANNELS;
 use crate::ui::gradient::{Gradient, Stop};
-use crate::ui::loudness_indicator::LoudnessIndicator;
+use crate::ui::loudness_indicator::{LOUDNESS_FONT_SIZE, LoudnessIndicator};
 use crate::ui::visualizer::VisualizerType;
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
@@ -14,17 +14,18 @@ use crate::ui::visualizer::vectorscope::{VectorscopeSettings, VectorscopeVisuali
 use crate::ui::visualizer::visualizer_widget::{RenderArgs, Visualizer, VisualizerWidget};
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
 use egui;
-use egui::Rect;
-use egui::{Color32, Sense, Vec2, Widget};
+use egui::{Button, Color32, FontId, Sense, Vec2};
+use egui::{Grid, Rect, RichText};
 use egui_extras::{Size, StripBuilder};
 use serde::{Deserialize, Serialize};
 use std::default::Default;
-use std::ops::RangeInclusive;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 pub type VisualizerBoundCache = std::collections::HashMap<(VisualizerType, AudioChannel), Rect>;
+pub const FREQ_LABEL_FONT_SIZE: f32 = 8.0;
+pub const FREQ_LABEL_ROW_COUNT: usize = 3;
 
 pub struct WaveSync {
     audio_service: sound::audio_service::AudioService,
@@ -267,58 +268,58 @@ impl AppHandler for WaveSync {
         egui::TopBottomPanel::bottom("bottom_bar")
             .resizable(false)
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button(egui_phosphor::regular::GEAR).clicked() {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let mut height = 20.0;
+                    ui.ctx().fonts(|fonts| {
+                        height = fonts.row_height(&FontId::monospace(LOUDNESS_FONT_SIZE))
+                            * FREQ_LABEL_ROW_COUNT as f32;
+                    });
+
+                    if ui
+                        .add(
+                            Button::new(egui_phosphor::regular::GEAR)
+                                .min_size(Vec2::new(height, height)),
+                        )
+                        .clicked()
+                    {
                         self.settings_shown = true;
                     }
-                    ui.separator();
 
-                    {
-                        let sources = self.audio_service.available_sources.lock().unwrap();
-                        let mut current_value = self.audio_service.get_source().id;
-                        egui::ComboBox::from_id_salt("source_select")
-                            .selected_text(self.audio_service.get_source().name)
-                            .show_ui(ui, |ui| {
-                                for source in &*sources {
-                                    ui.selectable_value(
-                                        &mut current_value,
-                                        source.id.clone(),
-                                        source.name.clone(),
-                                    );
-                                }
-                            });
-                        drop(sources);
-                        self.audio_service.update_source(current_value);
-                    }
+                    let sources = self.audio_service.available_sources.lock().unwrap();
+                    let mut current_value = self.audio_service.get_source().id;
+                    egui::ComboBox::from_id_salt("source_select")
+                        .selected_text(self.audio_service.get_source().name)
+                        .show_ui(ui, |ui| {
+                            for source in &*sources {
+                                ui.selectable_value(
+                                    &mut current_value,
+                                    source.id.clone(),
+                                    source.name.clone(),
+                                );
+                            }
+                        });
+                    drop(sources);
+                    self.audio_service.update_source(current_value);
 
-                    ui.separator();
-                    for peak in self.audio_service.get_peak_labels() {
-                        ui.label(peak);
-                        ui.separator();
-                    }
-                    ui.label(format!("[{}]", self.audio_service.get_last_frame_size()));
+                    peak_labels(ui, self.audio_service.get_peak_labels(), height);
 
-                    let audio_backend = self.audio_service.audio_backend.lock().unwrap();
-                    if let Some(dummy_backend) = audio_backend
-                        .as_any()
-                        .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>(
-                    ) {
-                        let mut sequencer_frequency = dummy_backend
-                            .pattern_data
-                            .sequencer_frequency
+                    if let Some(dummy) =
+                        self.audio_service
+                            .audio_backend
                             .lock()
-                            .unwrap();
-                        egui::Slider::new(
-                            &mut *sequencer_frequency,
-                            RangeInclusive::from(egui::Rangef::new(20.0, 1000.0)),
-                        )
-                        .ui(ui);
+                            .unwrap()
+                            .as_any()
+                            .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>()
+                    {
+                        let mut seq = dummy.pattern_data.sequencer_frequency.lock().unwrap();
+                        ui.add(egui::Slider::new(&mut *seq, 20.0..=1000.0));
                     }
 
                     ui.add(self.loudness_indicator.ui(
                         &self.audio_service.get_loudness_values(),
                         delta_t,
                         &self.visuals,
+                        height,
                     ));
                 });
             });
@@ -437,4 +438,30 @@ fn theme_from_text(text: &str) -> catppuccin_egui::Theme {
         "Machiato" => catppuccin_egui::MACCHIATO,
         _ => catppuccin_egui::MOCHA,
     }
+}
+
+fn peak_labels(ui: &mut egui::Ui, peaks: Vec<RichText>, height: f32) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(0.0, height),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            let rows = FREQ_LABEL_ROW_COUNT;
+            let cols = peaks.len().div_ceil(rows);
+
+            Grid::new("peak_grid")
+                .num_columns(cols)
+                .spacing([0.0, 0.0])
+                .min_row_height(0.0)
+                .show(ui, |ui| {
+                    for r in 0..rows {
+                        for c in 0..cols {
+                            if let Some(p) = peaks.get(c * rows + r) {
+                                ui.label(p.clone());
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        },
+    );
 }

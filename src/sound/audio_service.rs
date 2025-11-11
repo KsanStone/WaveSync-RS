@@ -5,7 +5,7 @@ use crate::sound::loudness::rms::RmsLoudnessMeter;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::wavesync::stable_num;
+use crate::wavesync::{FREQ_LABEL_FONT_SIZE, stable_num};
 use circular_buffer::CircularBuffer;
 use egui::RichText;
 use log::info;
@@ -341,11 +341,11 @@ impl Inner {
                 let fft_peak = self.get_fft_peak(audio_chanel);
                 let label = RichText::new(
                     if let Some(fft_peak) = fft_peak
-                        && fft_peak.interpolated_frequency > 0.0
-                        && fft_peak.interpolated_frequency < 96000.0
+                        && fft_peak.interpolated_frequency >= 0.0
+                        && fft_peak.interpolated_frequency <= 96000.0
                     {
                         format!(
-                            "{}: {}Hz",
+                            "{}: {}",
                             audio_chanel.get_label(),
                             stable_num(7, 1, fft_peak.interpolated_frequency)
                         )
@@ -353,7 +353,8 @@ impl Inner {
                         format!("{}: -----.-", audio_chanel.get_label())
                     },
                 )
-                .monospace();
+                .monospace()
+                .size(FREQ_LABEL_FONT_SIZE);
                 labels.push(label);
             } else {
                 break;

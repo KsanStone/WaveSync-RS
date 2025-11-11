@@ -4,6 +4,8 @@ use crate::ui::plot::Axis;
 use crate::wavesync::WaveSyncVisuals;
 use egui::{Align2, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, Widget};
 
+pub const LOUDNESS_FONT_SIZE: f32 = 8.0;
+
 pub struct LoudnessIndicator {
     smoother: MultiplicativeSmoother,
     axis: Axis,
@@ -34,6 +36,7 @@ impl LoudnessIndicator {
         vals: &[f32],
         dt: f32,
         visuals: &'a WaveSyncVisuals,
+        height: f32,
     ) -> LoudnessWidget<'a> {
         let vals = self.smoother.smooth_data(dt, vals).to_vec();
         LoudnessWidget {
@@ -41,6 +44,7 @@ impl LoudnessIndicator {
             visuals,
             axis: &self.axis,
             tics: &self.tick_cache,
+            height,
         }
     }
 }
@@ -50,27 +54,34 @@ pub struct LoudnessWidget<'a> {
     visuals: &'a WaveSyncVisuals,
     axis: &'a Axis,
     tics: &'a [f32],
+    height: f32,
 }
 
 impl Widget for LoudnessWidget<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let (response, painter) = ui.allocate_painter(Vec2::new(150.0, 20.0), Sense::empty());
+        let (response, painter) =
+            ui.allocate_painter(Vec2::new(150.0, self.height), Sense::empty());
         let height = response.rect.height() / self.vals.len() as f32;
 
         for (i, val) in self.vals.into_iter().enumerate() {
             let p = self.axis.val_to_pos(val, 0.0, response.rect.width());
+            let lerp_factor = self.axis.norm_pos(val);
+            let color = self
+                .visuals
+                .color_start()
+                .lerp_to_gamma(self.visuals.color_end(), lerp_factor);
             let rect = Rect::from_min_size(
                 Pos2::new(response.rect.min.x, response.rect.min.y + height * i as f32),
                 Vec2::new(p, height),
             );
-            painter.rect_filled(rect, CornerRadius::same(3), self.visuals.wave_color());
+            painter.rect_filled(rect, CornerRadius::same(3), color);
         }
 
         let tick_size = 4.0;
 
         let color = self.visuals.plot_grid_highlight();
         let stroke = Stroke::new(1.0, color);
-        let font = FontId::monospace(8.0);
+        let font = FontId::monospace(LOUDNESS_FONT_SIZE);
 
         for (i, tick) in self.tics.iter().enumerate() {
             let p = self
