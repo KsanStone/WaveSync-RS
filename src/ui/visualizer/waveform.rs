@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-const MAX_LINE_SEGMENTS: usize = 1000;
+const MAX_LINE_SEGMENTS: usize = 2000;
 const PIXELS_PER_WAVE: u64 = 200;
 const MIN_DISPLAYED_SAMPLES: u64 = 10;
 

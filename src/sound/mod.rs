@@ -6,7 +6,7 @@ pub mod audio_system;
 pub mod capture_source;
 pub mod cpal_audio_backend;
 pub mod dummy_audio_backend;
-mod loudness;
+pub mod loudness;
 pub mod smoothing;
 pub mod windowing;
 

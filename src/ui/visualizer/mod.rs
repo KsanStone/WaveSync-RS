@@ -1,3 +1,4 @@
+pub mod extended_waveform;
 pub mod spectrogram;
 pub mod spectrum;
 pub mod vectorscope;

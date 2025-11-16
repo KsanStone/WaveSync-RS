@@ -39,7 +39,12 @@ impl AudioService {
 
         AudioService(Arc::new(Inner {
             audio_backend: Mutex::new(Box::new(CpalAudioBackend::new())),
-            audio_buffer: Mutex::new(std::array::from_fn(|_| CircularBuffer::boxed())),
+            audio_buffer: Mutex::new(std::array::from_fn(|_| {
+                let mut buffer = CircularBuffer::boxed();
+                // this ensures a consistent size for all channels, even if the source is mono
+                buffer.fill(0.0);
+                buffer
+            })),
             latest_fft: Mutex::new(std::array::from_fn(|_| vec![])),
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),
             samples_written: Default::default(),
@@ -109,7 +114,7 @@ pub struct Inner {
     pub audio_backend: Mutex<Box<dyn crate::sound::audio_backend::AudioBackend>>,
     pub fft_rate: AtomicU32,
     pub available_sources: Mutex<Vec<CaptureSource>>,
-    audio_buffer: Mutex<[Box<CircularBuffer<384000, f32>>; CHANNELS]>,
+    pub audio_buffer: Mutex<[Box<CircularBuffer<384000, f32>>; CHANNELS]>,
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
     samples_written: AtomicU64,

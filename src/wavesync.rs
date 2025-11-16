@@ -8,6 +8,9 @@ use crate::sound::audio_service::CHANNELS;
 use crate::ui::gradient::{Gradient, Stop};
 use crate::ui::loudness_indicator::{LOUDNESS_FONT_SIZE, LoudnessIndicator};
 use crate::ui::visualizer::VisualizerType;
+use crate::ui::visualizer::extended_waveform::{
+    ExtendedWaveformVisualizer, ExtendedWaveformVisualizerSettings,
+};
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
 use crate::ui::visualizer::vectorscope::{VectorscopeSettings, VectorscopeVisualizer};
@@ -31,6 +34,7 @@ pub struct WaveSync {
     audio_service: sound::audio_service::AudioService,
     waveform_visualizers: Vec<WaveformVisualizer>,
     spectrum_visualizers: Vec<SpectrumVisualizer>,
+    extended_waveform_visualizers: Vec<ExtendedWaveformVisualizer>,
     spectrogram_visualizer: SpectrogramVisualizer,
     vectorscope_visualizer: VectorscopeVisualizer,
     settings_shown: bool,
@@ -45,6 +49,7 @@ pub struct WaveSync {
 pub struct WaveSyncAppData {
     pub waveform_settings: WaveformSettings,
     pub spectrum_settings: SpectrumVisualizerSettings,
+    pub extended_waveform_settings: ExtendedWaveformVisualizerSettings,
     pub spectrogram_settings: SpectrogramSettings,
     pub vectorscope_settings: VectorscopeSettings,
     pub fft_rate: u32,
@@ -58,6 +63,14 @@ pub struct WaveSyncVisuals {
 
 impl WaveSyncVisuals {
     pub fn wave_color(&self) -> Color32 {
+        self.theme.blue
+    }
+
+    pub fn ex_wave_color(&self) -> Color32 {
+        self.theme.base.lerp_to_gamma(self.rms_color(), 0.7)
+    }
+
+    pub fn rms_color(&self) -> Color32 {
         self.theme.blue
     }
 
@@ -98,6 +111,7 @@ impl WaveSync {
 
         let mut waveform_visualizers = vec![];
         let mut spectrum_visualizers = vec![];
+        let mut extended_waveform_visualizers = vec![];
 
         for channel in 0..CHANNELS {
             let channel = AudioChannel::try_from(channel as u32).unwrap();
@@ -107,6 +121,11 @@ impl WaveSync {
                 data.clone(),
             ));
             spectrum_visualizers.push(SpectrumVisualizer::new(
+                audio_service.clone(),
+                channel,
+                data.clone(),
+            ));
+            extended_waveform_visualizers.push(ExtendedWaveformVisualizer::new(
                 audio_service.clone(),
                 channel,
                 data.clone(),
@@ -128,6 +147,7 @@ impl WaveSync {
             spectrum_visualizers,
             spectrogram_visualizer,
             vectorscope_visualizer,
+            extended_waveform_visualizers,
             audio_service,
             settings_shown: false,
             last_update: Instant::now(),
@@ -170,19 +190,11 @@ impl WaveSync {
                         .sizes(Size::remainder(), 2)
                         .vertical(|mut strip| {
                             strip.cell(|ui| {
-                                let mut rect = Rect::ZERO;
-                                ui.add(
-                                    VisualizerWidget::new(
-                                        Box::new(self.vectorscope_visualizer.clone()),
-                                        ctx,
-                                        &self.visuals,
-                                    )
-                                    .view_rect(&mut rect),
-                                );
-                                self.visualizer_bounds.insert(
-                                    (VisualizerType::Vectorscope, AudioChannel::Master),
-                                    rect,
-                                );
+                                ui.add(VisualizerWidget::new(
+                                    Box::new(self.extended_waveform_visualizers[0].clone()),
+                                    ctx,
+                                    &self.visuals,
+                                ));
                             });
 
                             strip.cell(|ui| {
@@ -234,7 +246,7 @@ impl WaveSync {
                 for i in 1..3 {
                     strip.cell(|ui| {
                         StripBuilder::new(ui)
-                            .sizes(Size::remainder(), 2)
+                            .sizes(Size::remainder(), 3)
                             .vertical(|mut strip| {
                                 strip.cell(|ui| {
                                     ui.add(VisualizerWidget::new(
@@ -251,6 +263,14 @@ impl WaveSync {
                                         &self.visuals,
                                     ));
                                 });
+
+                                strip.cell(|ui| {
+                                    ui.add(VisualizerWidget::new(
+                                        Box::new(self.extended_waveform_visualizers[i].clone()),
+                                        ctx,
+                                        &self.visuals,
+                                    ));
+                                })
                             });
                     });
                 }
