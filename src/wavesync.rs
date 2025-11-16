@@ -55,6 +55,7 @@ pub struct WaveSyncAppData {
     pub fft_rate: u32,
     pub fft_size: usize,
     pub theme_name: String,
+    pub audio_device_name: Option<String>,
 }
 
 pub struct WaveSyncVisuals {
@@ -103,7 +104,7 @@ impl WaveSync {
     pub fn new(data: WaveSyncAppData) -> Self {
         let audio_service = sound::audio_service::AudioService::new();
 
-        audio_service.init();
+        audio_service.init(data.audio_device_name.clone());
         audio_service.update_fft_plan(data.fft_size);
         audio_service.update_fft_rate(data.fft_rate);
         let theme_name = data.theme_name.clone();
@@ -410,6 +411,7 @@ impl AppHandler for WaveSync {
         data.fft_size = self.audio_service.get_fft_size();
         data.fft_rate = self.audio_service.fft_rate.load(Ordering::Acquire);
         data.theme_name = theme_text(self.visuals.theme);
+        data.audio_device_name = self.audio_service.get_device_name();
 
         persistence.set(APP_KEY, &*data);
     }

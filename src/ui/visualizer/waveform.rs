@@ -44,7 +44,7 @@ impl Default for WaveformSettings {
         Self {
             align_to_peak: true,
             duration: Duration::from_millis(150),
-            range: 1.0,
+            range: 1.2,
         }
     }
 }

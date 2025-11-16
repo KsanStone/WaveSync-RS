@@ -1,3 +1,4 @@
+use crate::deref_arc;
 use crate::sound::capture_source::CaptureSource;
 use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::loudness::LoudnessMeter;
@@ -17,15 +18,7 @@ use std::sync::{Arc, Mutex};
 
 pub const CHANNELS: usize = 3;
 
-#[derive(Clone)]
-pub struct AudioService(Arc<Inner>);
-
-impl Deref for AudioService {
-    type Target = Inner;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+deref_arc!(AudioService);
 
 impl Default for AudioService {
     fn default() -> Self {
@@ -61,14 +54,14 @@ impl AudioService {
         }))
     }
 
-    pub fn init(&self) {
+    pub fn init(&self, prev_device: Option<String>) {
         let mut backend = self.audio_backend.lock().unwrap();
 
         // Print detected audio devices
         let devices = backend.detect_supported_capture_sources();
-        info!("🎵 Detected Audio Devices:");
+        info!("Detected Audio Devices:");
         if devices.is_empty() {
-            info!("   ❌ No audio input devices found!");
+            info!("   No audio input devices found!");
         } else {
             for (i, device) in devices.iter().enumerate() {
                 info!(
@@ -84,7 +77,7 @@ impl AudioService {
 
         // Print audio systems
         let systems = backend.detect_supported_audio_systems();
-        info!("\n🔊 Audio Systems:");
+        info!("Audio Systems:");
         for system in &systems {
             info!("   {}", system.name);
         }
@@ -97,12 +90,15 @@ impl AudioService {
             }
         }));
 
-        let source = backend.find_default_capture_source();
-        // let source = devices[0].clone();
-        info!(
-            "\n▶️  Starting capture from: {} (ID: {})",
-            source.name, source.id
-        );
+        let source = if let Some(prev_device_id) = prev_device {
+            devices
+                .iter()
+                .find(|x| x.id == prev_device_id)
+                .cloned()
+                .unwrap_or_else(|| backend.find_default_capture_source())
+        } else {
+            backend.find_default_capture_source()
+        };
         backend.start_capture(source.clone());
         self.current_capture_source.lock().unwrap().replace(source);
         self.available_sources.lock().unwrap().clear();
@@ -315,12 +311,21 @@ impl Inner {
         self.samples_written.load(Ordering::Acquire)
     }
 
+    pub fn get_device_name(&self) -> Option<String> {
+        self.current_capture_source
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|x| x.id.clone())
+    }
+
     pub fn get_source(&self) -> CaptureSource {
-        if let Some(source) = self.current_capture_source.lock().unwrap().as_ref() {
-            source.clone()
-        } else {
-            Default::default()
-        }
+        self.current_capture_source
+            .lock()
+            .unwrap()
+            .as_ref()
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Returns the count of audio channels with which sth is being done.

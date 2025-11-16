@@ -57,7 +57,7 @@ pub struct ExtendedWaveformVisualizerSettings {
 
 impl Default for ExtendedWaveformVisualizerSettings {
     fn default() -> Self {
-        Self { range: 1.0 }
+        Self { range: 1.2 }
     }
 }
 

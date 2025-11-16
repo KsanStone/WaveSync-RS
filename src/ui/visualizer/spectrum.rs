@@ -58,8 +58,8 @@ impl Default for SpectrumVisualizerSettings {
             smoother_factor: 0.7,
             frequency_axis_logarithmic: true,
             smooth_line: true,
-            freq_min: 0,
-            freq_max: 20000,
+            freq_min: 20,
+            freq_max: 24000,
         }
     }
 }

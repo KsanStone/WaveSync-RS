@@ -8,6 +8,7 @@ const X_AXIS_WIDTH: i8 = 20;
 const Y_AXIS_WIDTH: i8 = 30;
 const TICK_SIZE: f32 = 4.0;
 const FONT_SIZE: f32 = 9.0;
+const MARGIN: i8 = 5;
 
 #[derive(Clone)]
 pub struct PlotData {
@@ -263,14 +264,14 @@ impl<'a> Plot<'a> {
             left: if self.plot_data.y_axis_shown {
                 Y_AXIS_WIDTH
             } else {
-                0
+                MARGIN
             },
-            right: 0,
-            top: 0,
+            right: MARGIN,
+            top: MARGIN,
             bottom: if self.plot_data.x_axis_shown {
                 X_AXIS_WIDTH
             } else {
-                0
+                MARGIN
             },
         });
 

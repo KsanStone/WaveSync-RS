@@ -100,7 +100,7 @@ impl Default for SpectrogramSettings {
             is_vertical: true,
             shown_duration: Duration::from_secs(10),
             freq_min: 20,
-            freq_max: 20000,
+            freq_max: 24000,
             frequency_axis_logarithmic: true,
         }
     }
