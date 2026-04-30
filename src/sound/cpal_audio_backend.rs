@@ -24,7 +24,7 @@ macro_rules! impl_stream_methods {
     ($fn_prefix:ident, $sample_type:ty, $convert:expr) => {
         fn $fn_prefix(
             device: &Device,
-            config: &StreamConfig,
+            config: StreamConfig,
             callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
             channels: usize,
         ) -> Result<Stream, Box<dyn std::error::Error>> {
@@ -112,7 +112,7 @@ impl AudioBackend for CpalAudioBackend {
                         format!("input_device_{}", index)
                     },
                     channels: config.channels() as u32,
-                    sample_rate: config.sample_rate().0,
+                    sample_rate: config.sample_rate(),
                     format: SampleFormat::F32,
                     backend: AudioBackendType::Cpal,
                 })
@@ -142,7 +142,7 @@ impl AudioBackend for CpalAudioBackend {
                         name: format!("🔄 {} (Loopback)", device.0.name().unwrap_or_default()),
                         id: format!("loopback_device_{}", i),
                         channels: cfg.channels() as u32,
-                        sample_rate: cfg.sample_rate().0,
+                        sample_rate: cfg.sample_rate(),
                         format: SampleFormat::F32,
                         backend: AudioBackendType::Cpal,
                         is_loopback: true,
@@ -161,7 +161,7 @@ impl AudioBackend for CpalAudioBackend {
                 name: device.0.name().unwrap_or_default(),
                 id: format!("input_device_{}", i),
                 channels: cfg.channels() as u32,
-                sample_rate: cfg.sample_rate().0,
+                sample_rate: cfg.sample_rate(),
                 format: SampleFormat::F32,
                 backend: AudioBackendType::Cpal,
                 is_loopback: false,
@@ -217,8 +217,8 @@ impl AudioBackend for CpalAudioBackend {
         let callback = self.capture_callback.as_ref().unwrap().clone();
 
         // Determine which function to call based on sample format
-        let make_stream = move |device: &Device,
-                                config: &StreamConfig,
+            let make_stream = move |device: &Device,
+                                config: StreamConfig,
                                 channels: usize|
               -> Result<Stream, Box<dyn std::error::Error>> {
             use cpal::SampleFormat::*;
@@ -276,7 +276,7 @@ impl AudioBackend for CpalAudioBackend {
 
         let device = device.clone();
 
-        thread::spawn(move || match make_stream(&device, &config, channels) {
+        thread::spawn(move || match make_stream(&device, config, channels) {
             Ok(stream) => {
                 if let Err(e) = stream.play() {
                     error!(
