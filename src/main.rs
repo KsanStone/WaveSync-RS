@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+
 use crate::app::App;
 use crate::persistance::APP_KEY;
 use crate::wavesync::{WaveSync, WaveSyncAppData};

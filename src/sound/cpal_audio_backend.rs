@@ -94,23 +94,19 @@ impl AudioBackend for CpalAudioBackend {
     fn detect_supported_capture_sources(&self) -> Vec<CaptureSource> {
         self.input_devices
             .iter()
-            .enumerate()
-            .filter_map(|(index, device)| {
+            .filter_map(|device| {
                 let is_loopback = !device.1;
                 let config = if is_loopback {
                     device.0.default_output_config().ok()
                 } else {
                     device.0.default_input_config().ok()
                 }?;
+                let id = source_id_for_device(&device.0, is_loopback)?;
                 let name_prefix = if is_loopback { "🔄" } else { "🎤" };
                 Some(CaptureSource {
-                    name: format!("{} {}", name_prefix, device.0.name().unwrap_or_default()),
+                    name: format!("{} {}", name_prefix, device_label(&device.0)),
                     is_loopback,
-                    id: if is_loopback {
-                        format!("loopback_device_{}", index)
-                    } else {
-                        format!("input_device_{}", index)
-                    },
+                    id,
                     channels: config.channels() as u32,
                     sample_rate: config.sample_rate(),
                     format: SampleFormat::F32,
@@ -131,16 +127,16 @@ impl AudioBackend for CpalAudioBackend {
         if let Some(source) = self
             .input_devices
             .iter()
-            .enumerate()
-            .filter(|(_, d)| !d.1)
-            .filter_map(|(i, device)| {
+            .filter(|d| !d.1)
+            .filter_map(|device| {
+                let id = source_id_for_device(&device.0, true)?;
                 device
                     .0
                     .default_output_config()
                     .ok()
                     .map(|cfg| CaptureSource {
-                        name: format!("🔄 {} (Loopback)", device.0.name().unwrap_or_default()),
-                        id: format!("loopback_device_{}", i),
+                        name: format!("🔄 {} (Loopback)", device_label(&device.0)),
+                        id,
                         channels: cfg.channels() as u32,
                         sample_rate: cfg.sample_rate(),
                         format: SampleFormat::F32,
@@ -154,12 +150,13 @@ impl AudioBackend for CpalAudioBackend {
         }
 
         // Fallback to first input device
-        if let Some((i, device)) = self.input_devices.iter().enumerate().next()
+        if let Some(device) = self.input_devices.iter().next()
             && let Ok(cfg) = device.0.default_input_config()
+            && let Some(id) = source_id_for_device(&device.0, false)
         {
             return CaptureSource {
-                name: device.0.name().unwrap_or_default(),
-                id: format!("input_device_{}", i),
+                name: device_label(&device.0),
+                id,
                 channels: cfg.channels() as u32,
                 sample_rate: cfg.sample_rate(),
                 format: SampleFormat::F32,
@@ -196,23 +193,20 @@ impl AudioBackend for CpalAudioBackend {
             drop(stream);
         }
 
-        let is_loopback = source.id.starts_with("loopback_device_");
-        let device_index = source
-            .id
-            .strip_prefix("input_device_")
-            .or_else(|| source.id.strip_prefix("loopback_device_"))
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or_else(|| {
-                error!("Unknown device type: {}", source.id);
-                0
-            });
-
-        let device = if let Some(d) = self.input_devices.get(device_index) {
-            d.0.clone()
-        } else {
+        let Some((device, is_input)) = self
+            .input_devices
+            .iter()
+            .find(|(device, is_input)| {
+                source_id_for_device(device, !*is_input)
+                    .as_deref()
+                    .is_some_and(|id| id == source.id)
+            })
+        else {
             error!("Device not found: {}", source.id);
             return;
         };
+        let is_loopback = !*is_input;
+        let device = device.clone();
 
         let callback = self.capture_callback.as_ref().unwrap().clone();
 
@@ -281,7 +275,7 @@ impl AudioBackend for CpalAudioBackend {
                 if let Err(e) = stream.play() {
                     error!(
                         "Error starting capture for device '{}': {}",
-                        device.name().unwrap_or_else(|_| "Unknown".to_string()),
+                        device_label(&device),
                         e
                     );
                 }
@@ -290,13 +284,13 @@ impl AudioBackend for CpalAudioBackend {
                 drop(stream);
                 info!(
                     "Capture stopped for device '{}'",
-                    device.name().unwrap_or_else(|_| "Unknown".to_string())
+                    device_label(&device)
                 );
             }
             Err(_) => {
                 error!(
                     "Failed to create stream for device '{}'",
-                    device.name().unwrap_or_else(|_| "Unknown".to_string())
+                    device_label(&device)
                 );
             }
         });
@@ -322,6 +316,19 @@ fn pick_loopback_config(dev: &cpal::Device) -> anyhow::Result<StreamConfig> {
         .with_max_sample_rate();
 
     Ok(cfg.config())
+}
+
+fn device_label(device: &Device) -> String {
+    device
+        .description()
+        .map(|description| description.name().to_string())
+        .unwrap_or_else(|_| "Unknown".to_string())
+}
+
+fn source_id_for_device(device: &Device, is_loopback: bool) -> Option<String> {
+    let kind = if is_loopback { "loopback" } else { "input" };
+    let id = device.id().ok()?;
+    Some(format!("{}_device_{}", kind, id))
 }
 
 impl CpalAudioBackend {
