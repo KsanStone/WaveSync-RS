@@ -4,13 +4,13 @@ use crate::sound::capture_source::CaptureSource;
 use crate::sound::{AudioBackendType, SampleFormat};
 use itertools::Itertools;
 use log::info;
-use rand::Rng;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use rand::RngExt;
 
 /// Used for testing purposes, to avoid having to have a real audio device.
 pub struct DummyAudioBackend {

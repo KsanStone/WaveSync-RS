@@ -193,15 +193,11 @@ impl AudioBackend for CpalAudioBackend {
             drop(stream);
         }
 
-        let Some((device, is_input)) = self
-            .input_devices
-            .iter()
-            .find(|(device, is_input)| {
-                source_id_for_device(device, !*is_input)
-                    .as_deref()
-                    .is_some_and(|id| id == source.id)
-            })
-        else {
+        let Some((device, is_input)) = self.input_devices.iter().find(|(device, is_input)| {
+            source_id_for_device(device, !*is_input)
+                .as_deref()
+                .is_some_and(|id| id == source.id)
+        }) else {
             error!("Device not found: {}", source.id);
             return;
         };
@@ -211,7 +207,7 @@ impl AudioBackend for CpalAudioBackend {
         let callback = self.capture_callback.as_ref().unwrap().clone();
 
         // Determine which function to call based on sample format
-            let make_stream = move |device: &Device,
+        let make_stream = move |device: &Device,
                                 config: StreamConfig,
                                 channels: usize|
               -> Result<Stream, Box<dyn std::error::Error>> {
@@ -229,7 +225,6 @@ impl AudioBackend for CpalAudioBackend {
                 }
             };
 
-            info!("Using sample format: {:?}", format);
             match format {
                 F32 => Self::create_stream_f32(device, config, callback.clone(), channels),
                 I16 => Self::create_stream_i16(device, config, callback.clone(), channels),
@@ -246,7 +241,7 @@ impl AudioBackend for CpalAudioBackend {
 
         // Build stream config
         let config = if is_loopback {
-            match pick_loopback_config(&device) {
+            match pick_loopback_config(&device, source.sample_rate) {
                 Ok(cfg) => cfg,
                 Err(e) => {
                     error!("Error getting output config: {}", e);
@@ -282,10 +277,7 @@ impl AudioBackend for CpalAudioBackend {
 
                 let _ = rx.recv();
                 drop(stream);
-                info!(
-                    "Capture stopped for device '{}'",
-                    device_label(&device)
-                );
+                info!("Capture stopped for device '{}'", device_label(&device));
             }
             Err(_) => {
                 error!(
@@ -307,13 +299,30 @@ impl AudioBackend for CpalAudioBackend {
     }
 }
 
-fn pick_loopback_config(dev: &cpal::Device) -> anyhow::Result<StreamConfig> {
+fn pick_loopback_config(dev: &cpal::Device, native_sample_rate: u32) -> anyhow::Result<StreamConfig> {
     let mut configs = dev.supported_output_configs()?;
 
     let cfg = configs
-        .next()
-        .ok_or_else(|| anyhow!("No supported loopback configs"))?
-        .with_max_sample_rate();
+        .find_map(|cfg| {
+            if cfg.min_sample_rate() <= native_sample_rate
+                && native_sample_rate <= cfg.max_sample_rate()
+            {
+                Some(cfg.with_sample_rate(native_sample_rate))
+            } else {
+                None
+            }
+        })
+        .or_else(|| dev.default_output_config().ok())
+        .ok_or_else(|| anyhow!("No supported loopback configs"))?;
+
+    info!(
+        "Selected loopback stream config for '{}': {} Hz, {} channels, {:?} (native requested: {} Hz)",
+        device_label(dev),
+        cfg.sample_rate(),
+        cfg.channels(),
+        cfg.sample_format(),
+        native_sample_rate
+    );
 
     Ok(cfg.config())
 }
