@@ -112,6 +112,28 @@ pub struct WindowData {
     windows: HashMap<String, WindowRect>,
 }
 
+fn window_rect_is_visible(
+    window_rect: &WindowRect,
+    monitors: impl IntoIterator<Item = WindowRect>,
+) -> bool {
+    let window_left = i64::from(window_rect.x);
+    let window_top = i64::from(window_rect.y);
+    let window_right = window_left + i64::from(window_rect.width);
+    let window_bottom = window_top + i64::from(window_rect.height);
+
+    monitors.into_iter().any(|monitor| {
+        let monitor_left = i64::from(monitor.x);
+        let monitor_top = i64::from(monitor.y);
+        let monitor_right = monitor_left + i64::from(monitor.width);
+        let monitor_bottom = monitor_top + i64::from(monitor.height);
+
+        window_left < monitor_right
+            && window_right > monitor_left
+            && window_top < monitor_bottom
+            && window_bottom > monitor_top
+    })
+}
+
 pub struct App {
     instance: wgpu::Instance,
     state: Option<AppState>,
@@ -292,10 +314,30 @@ impl ApplicationHandler for App {
         if let Some(window_data) = self.persistence.get::<WindowData>(WINDOW_KEY)
             && let Some(window_rect) = window_data.windows.get("main")
         {
-            debug!("Restoring window position: {:?}", window_rect);
             window_attributes = window_attributes
-                .with_inner_size(PhysicalSize::new(window_rect.width, window_rect.height))
-                .with_position(PhysicalPosition::new(window_rect.x, window_rect.y));
+                .with_inner_size(PhysicalSize::new(window_rect.width, window_rect.height));
+
+            let monitors = event_loop.available_monitors().map(|monitor| {
+                let position = monitor.position();
+                let size = monitor.size();
+                WindowRect {
+                    x: position.x,
+                    y: position.y,
+                    width: size.width,
+                    height: size.height,
+                }
+            });
+
+            if window_rect_is_visible(window_rect, monitors) {
+                debug!("Restoring window position: {:?}", window_rect);
+                window_attributes = window_attributes
+                    .with_position(PhysicalPosition::new(window_rect.x, window_rect.y));
+            } else {
+                debug!(
+                    "Saved window position is outside the current monitor layout: {:?}",
+                    window_rect
+                );
+            }
         }
         window_attributes = window_attributes.with_window_icon(Some(
             Icon::from_rgba(
@@ -339,5 +381,63 @@ impl ApplicationHandler for App {
 impl Drop for App {
     fn drop(&mut self) {
         self.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WindowRect, window_rect_is_visible};
+
+    fn monitor(x: i32, y: i32, width: u32, height: u32) -> WindowRect {
+        WindowRect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn accepts_window_inside_monitor() {
+        let window = monitor(100, 100, 800, 600);
+
+        assert!(window_rect_is_visible(&window, [monitor(0, 0, 1920, 1080)]));
+    }
+
+    #[test]
+    fn accepts_window_on_monitor_with_negative_coordinates() {
+        let window = monitor(-1800, 100, 800, 600);
+
+        assert!(window_rect_is_visible(
+            &window,
+            [monitor(-1920, 0, 1920, 1080), monitor(0, 0, 1920, 1080),]
+        ));
+    }
+
+    #[test]
+    fn accepts_partially_visible_window() {
+        let window = monitor(1800, 900, 800, 600);
+
+        assert!(window_rect_is_visible(&window, [monitor(0, 0, 1920, 1080)]));
+    }
+
+    #[test]
+    fn rejects_window_outside_current_monitor_layout() {
+        let window = monitor(-1800, 100, 800, 600);
+
+        assert!(!window_rect_is_visible(
+            &window,
+            [monitor(0, 0, 1920, 1080)]
+        ));
+    }
+
+    #[test]
+    fn touching_monitor_edge_is_not_visible() {
+        let window = monitor(1920, 100, 800, 600);
+
+        assert!(!window_rect_is_visible(
+            &window,
+            [monitor(0, 0, 1920, 1080)]
+        ));
     }
 }
