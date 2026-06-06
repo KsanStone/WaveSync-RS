@@ -2,6 +2,7 @@
 name = "wavesync-rs"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 egui_extras = "0.32.3"
@@ -28,6 +29,9 @@ directories-next = "2.0.0"
 ron = "0.11.0"
 egui_double_slider = "0.9.0"
 anyhow = "1.0.100"
+
+[build-dependencies]
+winresource = "0.1.31"
 
 [profile.dev.package.rustfft]
 opt-level = 3

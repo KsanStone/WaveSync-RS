@@ -1,6 +1,6 @@
 use egui::emath::Pos2;
 use egui::epaint::Color32;
-use egui::{Align2, FontFamily, FontId, Margin, Rect, Sense, Ui};
+use egui::{Align2, FontFamily, FontId, Margin, Painter, Rect, Sense, Ui};
 use std::ops::Sub;
 
 const PLOT_DIGITS: usize = 2;
@@ -8,6 +8,7 @@ const X_AXIS_WIDTH: i8 = 20;
 const Y_AXIS_WIDTH: i8 = 30;
 const TICK_SIZE: f32 = 4.0;
 const FONT_SIZE: f32 = 9.0;
+const LABEL_SPACING: f32 = 2.0;
 const MARGIN: i8 = 5;
 
 #[derive(Clone)]
@@ -260,6 +261,8 @@ impl<'a> Plot<'a> {
         let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
 
         let painter = ui.painter();
+        let font = FontId::new(FONT_SIZE, FontFamily::Monospace);
+        let mut occupied_label_rects = Vec::new();
         let content_rect = rect.sub(Margin {
             left: if self.plot_data.y_axis_shown {
                 Y_AXIS_WIDTH
@@ -277,7 +280,7 @@ impl<'a> Plot<'a> {
 
         if self.plot_data.x_axis_shown {
             let ticks = self.plot_data.x_axis.tick_positions(content_rect.width());
-            for pos in ticks.major {
+            for &pos in &ticks.major {
                 let px_pos =
                     self.plot_data
                         .x_axis
@@ -289,15 +292,24 @@ impl<'a> Plot<'a> {
                     ],
                     (1.0, self.grid_color),
                 );
-                painter.text(
+            }
+            for pos in prioritized_label_positions(&ticks.major, self.plot_data.x_axis.logarithmic)
+            {
+                let px_pos =
+                    self.plot_data
+                        .x_axis
+                        .val_to_pos(pos, content_rect.min.x, content_rect.max.x);
+                paint_label_if_available(
+                    painter,
                     Pos2::new(px_pos, content_rect.max.y + 2.0),
                     Align2::CENTER_TOP,
                     label_format(pos, PLOT_DIGITS),
-                    FontId::new(FONT_SIZE, FontFamily::Monospace),
+                    font.clone(),
                     self.label_color,
+                    &mut occupied_label_rects,
                 );
             }
-            for pos in ticks.minor {
+            for &pos in &ticks.minor {
                 let px_pos =
                     self.plot_data
                         .x_axis
@@ -331,7 +343,7 @@ impl<'a> Plot<'a> {
 
         if self.plot_data.y_axis_shown {
             let ticks = self.plot_data.y_axis.tick_positions(content_rect.height());
-            for pos in ticks.major {
+            for &pos in &ticks.major {
                 let px_pos =
                     self.plot_data
                         .y_axis
@@ -343,15 +355,24 @@ impl<'a> Plot<'a> {
                     ],
                     (1.0, self.grid_color),
                 );
-                painter.text(
+            }
+            for pos in prioritized_label_positions(&ticks.major, self.plot_data.y_axis.logarithmic)
+            {
+                let px_pos =
+                    self.plot_data
+                        .y_axis
+                        .val_to_pos(pos, content_rect.max.y, content_rect.min.y);
+                paint_label_if_available(
+                    painter,
                     Pos2::new(content_rect.min.x - 2.0, px_pos),
                     Align2::RIGHT_CENTER,
                     label_format(pos, PLOT_DIGITS),
-                    FontId::new(FONT_SIZE, FontFamily::Monospace),
+                    font.clone(),
                     self.label_color,
+                    &mut occupied_label_rects,
                 );
             }
-            for pos in ticks.minor {
+            for &pos in &ticks.minor {
                 let px_pos =
                     self.plot_data
                         .y_axis
@@ -385,6 +406,42 @@ impl<'a> Plot<'a> {
 
         content_rect
     }
+}
+
+fn prioritized_label_positions(ticks: &[f32], logarithmic: bool) -> Vec<f32> {
+    let mut positions = ticks.to_vec();
+    if logarithmic {
+        positions.sort_by_key(|value| !is_decade(*value));
+    }
+    positions
+}
+
+fn is_decade(value: f32) -> bool {
+    value > 0.0 && (value.log10() - value.log10().round()).abs() < 0.0001
+}
+
+fn paint_label_if_available(
+    painter: &Painter,
+    position: Pos2,
+    anchor: Align2,
+    text: String,
+    font: FontId,
+    color: Color32,
+    occupied_rects: &mut Vec<Rect>,
+) {
+    let galley = painter.layout_no_wrap(text, font, color);
+    let rect = anchor.anchor_size(position, galley.size());
+
+    if label_rect_is_available(rect, occupied_rects) {
+        painter.galley(rect.min, galley, color);
+        occupied_rects.push(rect);
+    }
+}
+
+fn label_rect_is_available(rect: Rect, occupied_rects: &[Rect]) -> bool {
+    occupied_rects
+        .iter()
+        .all(|occupied| !occupied.expand(LABEL_SPACING).intersects(rect))
 }
 
 /// Formats small values with at most n significant digits,
@@ -424,4 +481,69 @@ fn label_format(x: f32, n: usize) -> String {
     };
 
     format!("{}{}", s, suffix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_decade, label_rect_is_available, prioritized_label_positions};
+    use egui::{Pos2, Rect};
+
+    #[test]
+    fn logarithmic_labels_prioritize_decades() {
+        let ticks = [700.0, 900.0, 1_000.0, 2_000.0, 10_000.0];
+
+        assert_eq!(
+            prioritized_label_positions(&ticks, true),
+            [1_000.0, 10_000.0, 700.0, 900.0, 2_000.0]
+        );
+    }
+
+    #[test]
+    fn linear_labels_keep_axis_order() {
+        let ticks = [700.0, 900.0, 1_000.0, 2_000.0];
+
+        assert_eq!(prioritized_label_positions(&ticks, false), ticks.to_vec());
+    }
+
+    #[test]
+    fn detects_decade_values() {
+        assert!(is_decade(1.0));
+        assert!(is_decade(1_000.0));
+        assert!(is_decade(100_000.0));
+        assert!(!is_decade(700.0));
+        assert!(!is_decade(2_000.0));
+    }
+
+    #[test]
+    fn accepts_label_with_enough_space() {
+        let occupied = [Rect::from_min_max(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(20.0, 10.0),
+        )];
+        let candidate = Rect::from_min_max(Pos2::new(23.0, 0.0), Pos2::new(43.0, 10.0));
+
+        assert!(label_rect_is_available(candidate, &occupied));
+    }
+
+    #[test]
+    fn rejects_overlapping_label() {
+        let occupied = [Rect::from_min_max(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(20.0, 10.0),
+        )];
+        let candidate = Rect::from_min_max(Pos2::new(15.0, 0.0), Pos2::new(35.0, 10.0));
+
+        assert!(!label_rect_is_available(candidate, &occupied));
+    }
+
+    #[test]
+    fn rejects_label_inside_spacing_margin() {
+        let occupied = [Rect::from_min_max(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(20.0, 10.0),
+        )];
+        let candidate = Rect::from_min_max(Pos2::new(21.0, 0.0), Pos2::new(41.0, 10.0));
+
+        assert!(!label_rect_is_available(candidate, &occupied));
+    }
 }
