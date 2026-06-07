@@ -13,6 +13,8 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
+#[cfg(target_os = "windows")]
+use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{Icon, Window, WindowId};
 
 pub struct AppState {
@@ -339,14 +341,18 @@ impl ApplicationHandler for App {
                 );
             }
         }
-        window_attributes = window_attributes.with_window_icon(Some(
-            Icon::from_rgba(
-                self.icon_data.rgba.clone(),
-                self.icon_data.width,
-                self.icon_data.height,
-            )
-            .unwrap(),
-        ));
+        let icon = Icon::from_rgba(
+            self.icon_data.rgba.clone(),
+            self.icon_data.width,
+            self.icon_data.height,
+        )
+        .unwrap();
+        window_attributes = window_attributes.with_window_icon(Some(icon.clone()));
+
+        #[cfg(target_os = "windows")]
+        {
+            window_attributes = window_attributes.with_taskbar_icon(Some(icon));
+        }
 
         let window = event_loop.create_window(window_attributes).unwrap();
         pollster::block_on(self.set_window(window));
