@@ -11,6 +11,7 @@ pub mod app;
 pub mod egui_tools;
 mod persistance;
 pub mod sound;
+pub mod themes;
 pub mod ui;
 pub mod wavesync;
 

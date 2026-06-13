@@ -114,6 +114,10 @@ pub struct WindowData {
     windows: HashMap<String, WindowRect>,
 }
 
+fn window_rect_is_tiny(window_rect: &WindowRect) -> bool {
+    window_rect.width < 50 || window_rect.height < 50
+}
+
 fn window_rect_is_visible(
     window_rect: &WindowRect,
     monitors: impl IntoIterator<Item = WindowRect>,
@@ -291,6 +295,12 @@ impl App {
         let window = self.window.as_ref().unwrap();
         let size = window.inner_size();
         let position = window.outer_position();
+
+        if size.width == 0 || size.height == 0 {
+            debug!("Not saving window position because size is zero: {:?}", size);
+            return;
+        }
+
         if let Ok(position) = position {
             debug!("Saving window position: {:?} {:?}", position, size);
             let window_data = WindowData {
@@ -316,8 +326,15 @@ impl ApplicationHandler for App {
         if let Some(window_data) = self.persistence.get::<WindowData>(WINDOW_KEY)
             && let Some(window_rect) = window_data.windows.get("main")
         {
-            window_attributes = window_attributes
-                .with_inner_size(PhysicalSize::new(window_rect.width, window_rect.height));
+            if !window_rect_is_tiny(window_rect) {
+                window_attributes = window_attributes
+                    .with_inner_size(PhysicalSize::new(window_rect.width, window_rect.height));
+            } else {
+                debug!(
+                    "Saved window size is too small, using default size instead: {:?}",
+                    window_rect
+                );
+            }
 
             let monitors = event_loop.available_monitors().map(|monitor| {
                 let position = monitor.position();
@@ -336,7 +353,7 @@ impl ApplicationHandler for App {
                     .with_position(PhysicalPosition::new(window_rect.x, window_rect.y));
             } else {
                 debug!(
-                    "Saved window position is outside the current monitor layout: {:?}",
+                    "Saved window position is outside the current monitor layout or is too small: {:?}",
                     window_rect
                 );
             }

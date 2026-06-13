@@ -150,7 +150,7 @@ impl AudioBackend for CpalAudioBackend {
         }
 
         // Fallback to first input device
-        if let Some(device) = self.input_devices.iter().next()
+        if let Some(device) = self.input_devices.first()
             && let Ok(cfg) = device.0.default_input_config()
             && let Some(id) = source_id_for_device(&device.0, false)
         {

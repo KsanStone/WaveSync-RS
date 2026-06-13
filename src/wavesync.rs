@@ -3,6 +3,7 @@ use crate::persistance::{APP_KEY, Persistence};
 use crate::sound;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::CHANNELS;
+use crate::themes::{THEMES, theme_from_name, theme_name};
 use crate::ui::gradient::{Gradient, Stop};
 use crate::ui::loudness_indicator::{LOUDNESS_FONT_SIZE, LoudnessIndicator};
 use crate::ui::visualizer::VisualizerType;
@@ -151,7 +152,7 @@ impl WaveSync {
             settings_shown: false,
             last_update: Instant::now(),
             visuals: WaveSyncVisuals {
-                theme: theme_from_text(&theme_name),
+                theme: theme_from_name(&theme_name),
             },
             data,
             visualizer_bounds: Default::default(),
@@ -374,16 +375,11 @@ impl AppHandler for WaveSync {
                         ui.label("theme");
                         let selected = &mut self.visuals.theme;
                         egui::ComboBox::from_id_salt("theme")
-                            .selected_text(theme_text(*selected))
+                            .selected_text(theme_name(*selected))
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(selected, catppuccin_egui::MOCHA, "Mocha");
-                                ui.selectable_value(selected, catppuccin_egui::FRAPPE, "Frappe");
-                                ui.selectable_value(
-                                    selected,
-                                    catppuccin_egui::MACCHIATO,
-                                    "Machiato",
-                                );
-                                ui.selectable_value(selected, catppuccin_egui::LATTE, "Latte");
+                                for (name, theme) in THEMES {
+                                    ui.selectable_value(selected, theme, name);
+                                }
                             });
                     });
                     let mut val = self.audio_service.fft_rate.load(std::sync::atomic::Ordering::Acquire);
@@ -408,7 +404,7 @@ impl AppHandler for WaveSync {
 
         data.fft_size = self.audio_service.get_fft_size();
         data.fft_rate = self.audio_service.fft_rate.load(Ordering::Acquire);
-        data.theme_name = theme_text(self.visuals.theme);
+        data.theme_name = theme_name(self.visuals.theme).to_string();
         data.audio_device_name = self.audio_service.get_device_name();
 
         persistence.set(APP_KEY, &*data);
@@ -437,27 +433,6 @@ pub fn stable_num(length: usize, decimals: usize, val: f32) -> String {
     let pad = "-".repeat(missing_length);
 
     format!("{}{}", pad, val)
-}
-
-fn theme_text(theme: catppuccin_egui::Theme) -> String {
-    match theme {
-        catppuccin_egui::MOCHA => "Mocha",
-        catppuccin_egui::FRAPPE => "Frappe",
-        catppuccin_egui::LATTE => "Latte",
-        catppuccin_egui::MACCHIATO => "Machiato",
-        _ => "None",
-    }
-    .to_string()
-}
-
-fn theme_from_text(text: &str) -> catppuccin_egui::Theme {
-    match text {
-        "Mocha" => catppuccin_egui::MOCHA,
-        "Frappe" => catppuccin_egui::FRAPPE,
-        "Latte" => catppuccin_egui::LATTE,
-        "Machiato" => catppuccin_egui::MACCHIATO,
-        _ => catppuccin_egui::MOCHA,
-    }
 }
 
 fn peak_labels(ui: &mut egui::Ui, peaks: Vec<RichText>, height: f32) {
