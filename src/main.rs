@@ -9,6 +9,7 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 pub mod app;
 pub mod egui_tools;
+pub mod media;
 mod persistance;
 pub mod sound;
 pub mod themes;

@@ -30,6 +30,14 @@ ron = "0.11.0"
 egui_double_slider = "0.9.0"
 anyhow = "1.0.100"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58.0", features = [
+    "Foundation",
+    "Media_Control",
+    "Storage_Streams",
+    "Win32_System_Com",
+] }
+
 [build-dependencies]
 winresource = "0.1.31"
 

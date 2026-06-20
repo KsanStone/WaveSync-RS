@@ -1,4 +1,5 @@
 use crate::app::AppHandler;
+use crate::media::{MediaInfo, MediaProvider, platform_media_provider};
 use crate::persistance::{APP_KEY, Persistence};
 use crate::sound;
 use crate::sound::AudioChannel;
@@ -42,6 +43,8 @@ pub struct WaveSync {
     data: Arc<RwLock<WaveSyncAppData>>,
     visualizer_bounds: VisualizerBoundCache,
     loudness_indicator: LoudnessIndicator,
+    media_provider: Box<dyn MediaProvider>,
+    media_texture: Option<(u64, egui::TextureHandle)>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Default)]
@@ -157,6 +160,8 @@ impl WaveSync {
             data,
             visualizer_bounds: Default::default(),
             loudness_indicator: LoudnessIndicator::new(),
+            media_provider: platform_media_provider(),
+            media_texture: None,
         }
     }
 
@@ -289,7 +294,7 @@ impl AppHandler for WaveSync {
             .resizable(false)
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let mut height = 20.0;
+                    let mut height = 24.0;
                     ui.ctx().fonts(|fonts| {
                         height = fonts.row_height(&FontId::monospace(LOUDNESS_FONT_SIZE))
                             * FREQ_LABEL_ROW_COUNT as f32;
@@ -320,6 +325,12 @@ impl AppHandler for WaveSync {
                         });
                     drop(sources);
                     self.audio_service.update_source(current_value);
+
+                    if let Some(media) = self.media_provider.current_media() {
+                        media_card(ui, ctx, &media, &mut self.media_texture, height);
+                    } else {
+                        self.media_texture = None;
+                    }
 
                     peak_labels(ui, self.audio_service.get_peak_labels(), height);
 
@@ -424,6 +435,63 @@ impl AppHandler for WaveSync {
             }
         }
     }
+}
+
+fn media_card(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    media: &MediaInfo,
+    texture: &mut Option<(u64, egui::TextureHandle)>,
+    height: f32,
+) {
+    ui.separator();
+    if let Some(artwork) = &media.artwork {
+        if texture.as_ref().map(|(revision, _)| *revision) != Some(artwork.revision) {
+            let image = egui::ColorImage::from_rgba_unmultiplied(
+                [artwork.width, artwork.height],
+                &artwork.rgba,
+            );
+            *texture = Some((
+                artwork.revision,
+                ctx.load_texture("current-media-artwork", image, egui::TextureOptions::LINEAR),
+            ));
+        }
+        if let Some((_, texture)) = texture {
+            ui.add(egui::Image::new((texture.id(), Vec2::splat(height))));
+        }
+    } else {
+        *texture = None;
+    }
+
+    ui.allocate_ui_with_layout(
+        Vec2::new(180.0, height),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add(egui::Label::new(RichText::new(&media.title).strong()).truncate());
+            let subtitle = if media.artist.trim().is_empty() {
+                format_duration(media.position)
+            } else {
+                format!(
+                    "{}  ·  {} / {}",
+                    media.artist,
+                    format_duration(media.position),
+                    format_duration(media.duration)
+                )
+            };
+            ui.add(egui::Label::new(RichText::new(subtitle).small().weak()).truncate());
+            if !media.duration.is_zero() {
+                let progress = media.position.as_secs_f32() / media.duration.as_secs_f32();
+                ui.add(egui::ProgressBar::new(progress.clamp(0.0, 1.0)).desired_width(180.0).desired_height(3.0));
+            }
+        },
+    );
+    ui.separator();
+}
+
+fn format_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 /// Format a number such that its length doesn't vary and jitter the ui
