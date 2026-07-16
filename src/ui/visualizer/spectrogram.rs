@@ -273,7 +273,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 device,
                 self.visualizer.fft_buffer_size.load(Ordering::Acquire) as u32 / 4,
                 buff_length as u32,
-                wgpu::TextureFormat::Rgba32Float,
+                wgpu::TextureFormat::Rgba8Unorm,
                 false,
             );
 
@@ -282,7 +282,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 device,
                 GRADIENT_LOOKUP_LENGTH,
                 1,
-                wgpu::TextureFormat::Rgba32Float,
+                wgpu::TextureFormat::Rgba8Unorm,
                 false,
             );
 

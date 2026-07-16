@@ -24,8 +24,8 @@ struct Uniforms {
 
 // 2D texture with your main data
 @group(0) @binding(1) var buffer_tex: texture_2d<f32>;
-// Gradient as 1D non-filterable texture
-@group(0) @binding(2) var gradient_tex: texture_1d<f32>;
+// Gradient stored as a one-row 2D texture for OpenGL/ANGLE compatibility.
+@group(0) @binding(2) var gradient_tex: texture_2d<f32>;
 // Coordinate map as storage buffer
 @group(0) @binding(3) var<storage, read> coord_map: array<i32>;
 
@@ -60,8 +60,14 @@ fn fs_main(@location(0) frag_coord: vec2<f32>) -> @location(0) vec4<f32> {
     }
 
     // Map value to gradient using textureLoad instead of textureSample
-    let gradient_index = i32(val * f32(textureDimensions(gradient_tex, 0) - 1));
-    let color = textureLoad(gradient_tex, gradient_index, 0);
+    let gradient_index = i32(val * f32(textureDimensions(gradient_tex, 0).x - 1));
+    let color = textureLoad(gradient_tex, vec2<i32>(gradient_index, 0), 0);
 
-    return color;
+    // The gradient originates from egui's premultiplied Color32. Convert it back for the
+    // regular alpha blend used by this render pass. Fully transparent floor pixels leave the
+    // system backdrop untouched.
+    if color.a <= 0.0001 {
+        discard;
+    }
+    return vec4<f32>(color.rgb / color.a, color.a);
 }

@@ -1,4 +1,4 @@
-use crate::app::AppHandler;
+use crate::app::{AppHandler, WindowBackground};
 use crate::media::{MediaInfo, MediaProvider, platform_media_provider};
 use crate::persistance::{APP_KEY, Persistence};
 use crate::sound;
@@ -58,13 +58,37 @@ pub struct WaveSyncAppData {
     pub fft_size: usize,
     pub theme_name: String,
     pub audio_device_name: Option<String>,
+    pub window_background: WindowBackground,
 }
 
 pub struct WaveSyncVisuals {
     theme: catppuccin_egui::Theme,
+    window_background: WindowBackground,
 }
 
 impl WaveSyncVisuals {
+    fn translucent_background(&self) -> bool {
+        self.window_background.is_translucent()
+    }
+
+    fn background_overlay(&self) -> Color32 {
+        match self.window_background {
+            // Comparable to Windows Terminal's dark acrylic opacity: wallpaper still affects
+            // the material, but never washes out the visualization contrast.
+            WindowBackground::Acrylic => Color32::from_rgba_unmultiplied(8, 10, 15, 175),
+            WindowBackground::Mica => Color32::from_rgba_unmultiplied(8, 10, 15, 96),
+            WindowBackground::Solid => Color32::TRANSPARENT,
+        }
+    }
+
+    fn background_color(&self, color: Color32, alpha: u8) -> Color32 {
+        if self.translucent_background() {
+            Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
+        } else {
+            color
+        }
+    }
+
     pub fn wave_color(&self) -> Color32 {
         self.theme.blue
     }
@@ -78,7 +102,7 @@ impl WaveSyncVisuals {
     }
 
     pub fn color_start(&self) -> Color32 {
-        self.theme.base
+        self.background_color(self.theme.base, 50)
     }
 
     pub fn color_end(&self) -> Color32 {
@@ -86,16 +110,25 @@ impl WaveSyncVisuals {
     }
 
     pub fn plot_grid(&self) -> Color32 {
-        self.theme.surface0
+        self.background_color(self.theme.surface0, 120)
     }
 
     pub fn plot_grid_highlight(&self) -> Color32 {
-        self.theme.surface2
+        self.background_color(self.theme.surface2, 150)
     }
 
     pub fn spectrogram_gradient(&self) -> Gradient {
         Gradient::new(vec![
-            Stop::new(0.0, self.theme.base),
+            // The waterfall's lowest intensity used to be an opaque near-black pixel. Let the
+            // system material show through it, while retaining that black floor in Solid mode.
+            Stop::new(
+                0.0,
+                if self.translucent_background() {
+                    Color32::TRANSPARENT
+                } else {
+                    self.theme.base
+                },
+            ),
             Stop::new(1.0, self.theme.blue),
         ])
         .unwrap()
@@ -111,6 +144,7 @@ impl WaveSync {
         audio_service.update_fft_rate(data.fft_rate);
         let theme_name = data.theme_name.clone();
         let data = Arc::new(RwLock::new(data));
+        let window_background = data.read().unwrap().window_background;
 
         let mut waveform_visualizers = vec![];
         let mut spectrum_visualizers = vec![];
@@ -156,6 +190,7 @@ impl WaveSync {
             last_update: Instant::now(),
             visuals: WaveSyncVisuals {
                 theme: theme_from_name(&theme_name),
+                window_background,
             },
             data,
             visualizer_bounds: Default::default(),
@@ -288,10 +323,23 @@ impl AppHandler for WaveSync {
         let delta_t = self.last_update.elapsed().as_secs_f32();
         self.last_update = Instant::now();
         catppuccin_egui::set_theme(ctx, self.visuals.theme);
+        self.visuals.window_background = self.data.read().unwrap().window_background;
+        if self.visuals.translucent_background() {
+            ctx.style_mut(|style| {
+                style.visuals.window_fill = self.visuals.background_overlay();
+                style.visuals.panel_fill = self.visuals.background_overlay();
+                style.visuals.extreme_bg_color = Color32::from_rgba_unmultiplied(18, 19, 26, 120);
+            });
+        }
         ctx.request_repaint();
 
-        egui::TopBottomPanel::bottom("bottom_bar")
-            .resizable(false)
+        let mut bottom_panel = egui::TopBottomPanel::bottom("bottom_bar").resizable(false);
+        if self.visuals.translucent_background() {
+            bottom_panel = bottom_panel.frame(
+                egui::Frame::default().fill(self.visuals.background_overlay()),
+            );
+        }
+        bottom_panel
             .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let mut height = 24.0;
@@ -355,7 +403,13 @@ impl AppHandler for WaveSync {
                 });
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        let mut central_panel = egui::CentralPanel::default();
+        if self.visuals.translucent_background() {
+            central_panel = central_panel.frame(
+                egui::Frame::default().fill(self.visuals.background_overlay()),
+            );
+        }
+        central_panel.show(ctx, |ui| {
             if self.audio_service.get_active_audio_channels() == 1 {
                 self.mono_layout(ui, ctx);
             } else {
@@ -393,6 +447,22 @@ impl AppHandler for WaveSync {
                                 }
                             });
                     });
+                    ui.horizontal(|ui| {
+                        ui.label("Window background");
+                        let mut background = self.data.read().unwrap().window_background;
+                        egui::ComboBox::from_id_salt("window_background")
+                            .selected_text(match background {
+                                WindowBackground::Solid => "Solid",
+                                WindowBackground::Mica => "Mica (Windows 11)",
+                                WindowBackground::Acrylic => "Acrylic (Windows)",
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut background, WindowBackground::Solid, "Solid");
+                                ui.selectable_value(&mut background, WindowBackground::Mica, "Mica (Windows 11)");
+                                ui.selectable_value(&mut background, WindowBackground::Acrylic, "Acrylic (Windows)");
+                            });
+                        self.data.write().unwrap().window_background = background;
+                    });
                     let mut val = self.audio_service.fft_rate.load(std::sync::atomic::Ordering::Acquire);
                     ui.horizontal(|ui| {
                         ui.label("Fft rate");
@@ -419,6 +489,10 @@ impl AppHandler for WaveSync {
         data.audio_device_name = self.audio_service.get_device_name();
 
         persistence.set(APP_KEY, &*data);
+    }
+
+    fn window_background(&self) -> WindowBackground {
+        self.data.read().unwrap().window_background
     }
 
     fn post_egui(&mut self, mut args: RenderArgs) {

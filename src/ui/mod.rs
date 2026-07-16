@@ -201,16 +201,6 @@ fn create_texture(
     format: wgpu::TextureFormat,
     filterable: bool,
 ) -> (wgpu::Texture, wgpu::TextureView, wgpu::BindingType) {
-    let dimension = if height == 1 {
-        wgpu::TextureDimension::D1
-    } else {
-        wgpu::TextureDimension::D2
-    };
-    let view_dimension = if height == 1 {
-        wgpu::TextureViewDimension::D1
-    } else {
-        wgpu::TextureViewDimension::D2
-    };
     let tex_desc = wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
@@ -220,7 +210,9 @@ fn create_texture(
         },
         mip_level_count: 1,
         sample_count: 1,
-        dimension,
+        // Keep even one-row lookup tables 2D: OpenGL/ANGLE does not reliably expose 1D
+        // textures, while a 2D texture with height 1 is equivalent for this use case.
+        dimension: wgpu::TextureDimension::D2,
         format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
@@ -229,18 +221,21 @@ fn create_texture(
     let tex_view = tex.create_view(&wgpu::TextureViewDescriptor::default());
     let bind_ty = wgpu::BindingType::Texture {
         sample_type: wgpu::TextureSampleType::Float { filterable },
-        view_dimension,
+        view_dimension: wgpu::TextureViewDimension::D2,
         multisampled: false,
     };
     (tex, tex_view, bind_ty)
 }
 
 pub fn write_1d_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[[f32; 4]]) {
-    let tex_bytes = bytemuck::cast_slice(data);
+    let tex_bytes: Vec<u8> = data
+        .iter()
+        .flat_map(|pixel| pixel.map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8))
+        .collect();
 
     let buf_layout = wgpu::TexelCopyBufferLayout {
         offset: 0,
-        bytes_per_row: Some((size_of::<f32>() * data.len()) as u32 * 4),
+        bytes_per_row: Some(data.len() as u32 * 4),
         rows_per_image: None,
     };
 
@@ -252,7 +247,7 @@ pub fn write_1d_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[[f
     };
 
     // Perform the texture write operation
-    queue.write_texture(texture.as_image_copy(), tex_bytes, buf_layout, copy_size);
+    queue.write_texture(texture.as_image_copy(), &tex_bytes, buf_layout, copy_size);
 }
 
 pub fn write_2d_texture_row(
@@ -261,8 +256,12 @@ pub fn write_2d_texture_row(
     row: &[f32],
     sample_buffer_position: u32,
 ) {
-    // Convert row to bytes
-    let row_bytes = bytemuck::cast_slice(row);
+    // Values are normalized FFT magnitudes, so UNORM storage retains enough precision and is
+    // supported by the OpenGL backend used for transparent Windows surfaces.
+    let row_bytes: Vec<u8> = row
+        .iter()
+        .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
+        .collect();
 
     // Specify the destination in the texture
     let texture_copy = wgpu::TexelCopyTextureInfo {
@@ -279,7 +278,7 @@ pub fn write_2d_texture_row(
     // Specify the layout of the data in memory
     let data_layout = wgpu::TexelCopyBufferLayout {
         offset: 0,
-        bytes_per_row: Some(size_of_val(row) as u32),
+        bytes_per_row: Some(row.len() as u32),
         rows_per_image: Some(1),
     };
 
@@ -290,7 +289,7 @@ pub fn write_2d_texture_row(
         depth_or_array_layers: 1,
     };
 
-    queue.write_texture(texture_copy, row_bytes, data_layout, copy_size);
+    queue.write_texture(texture_copy, &row_bytes, data_layout, copy_size);
 }
 
 pub fn viewport(rect: Rect, screen_descriptor: &ScreenDescriptor, pass: &mut RenderPass) {

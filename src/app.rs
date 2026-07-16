@@ -15,7 +15,84 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::WindowAttributesExtWindows;
+#[cfg(target_os = "windows")]
+use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Icon, Window, WindowId};
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub enum WindowBackground {
+    #[default]
+    Solid,
+    Mica,
+    Acrylic,
+}
+
+impl WindowBackground {
+    #[cfg(target_os = "windows")]
+    fn apply(self, window: &Window) {
+        self.extend_dwm_frame(window);
+
+        let result = match self {
+            Self::Solid => {
+                let _ = window_vibrancy::clear_mica(window);
+                let _ = window_vibrancy::clear_acrylic(window);
+                window_vibrancy::clear_blur(window)
+            }
+            Self::Mica => {
+                let _ = window_vibrancy::clear_blur(window);
+                window_vibrancy::apply_mica(window, Some(true))
+            }
+            Self::Acrylic => {
+                let _ = window_vibrancy::clear_mica(window);
+                let _ = window_vibrancy::clear_blur(window);
+                window_vibrancy::apply_acrylic(window, Some((24, 25, 34, 110)))
+            }
+        };
+
+        if let Err(error) = result {
+            debug!("Could not apply {self:?} window background: {error}");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn extend_dwm_frame(self, window: &Window) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+        use windows::Win32::UI::Controls::MARGINS;
+
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+
+        // A negative margin tells DWM to paint its backdrop through the whole client area,
+        // not only the title bar.
+        let margins = if self.is_translucent() {
+            MARGINS {
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
+            }
+        } else {
+            MARGINS::default()
+        };
+        if let Err(error) = unsafe {
+            DwmExtendFrameIntoClientArea(HWND(handle.hwnd.get() as _), &margins)
+        } {
+            debug!("Could not extend DWM frame into client area: {error}");
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn apply(self, _: &Window) {}
+
+    pub fn is_translucent(self) -> bool {
+        !matches!(self, Self::Solid)
+    }
+}
 
 pub struct AppState {
     pub device: wgpu::Device,
@@ -57,6 +134,24 @@ impl AppState {
             .expect("Failed to create device");
 
         let swapchain_capabilities = surface.get_capabilities(&adapter);
+        let alpha_mode = swapchain_capabilities
+            .alpha_modes
+            .iter()
+            .copied()
+            .find(|mode| *mode == wgpu::CompositeAlphaMode::PreMultiplied)
+            .or_else(|| {
+                swapchain_capabilities
+                    .alpha_modes
+                    .iter()
+                    .copied()
+                    .find(|mode| *mode == wgpu::CompositeAlphaMode::PostMultiplied)
+            });
+        if alpha_mode.is_none() {
+            log::warn!(
+                "The active graphics backend does not support a transparent window surface; supported alpha modes: {:?}",
+                swapchain_capabilities.alpha_modes
+            );
+        }
         let selected_format = wgpu::TextureFormat::Bgra8Unorm;
         let swapchain_format = swapchain_capabilities
             .formats
@@ -71,7 +166,7 @@ impl AppState {
             height,
             present_mode: wgpu::PresentMode::AutoVsync,
             desired_maximum_frame_latency: 0,
-            alpha_mode: swapchain_capabilities.alpha_modes[0],
+            alpha_mode: alpha_mode.unwrap_or(wgpu::CompositeAlphaMode::Auto),
             view_formats: vec![],
         };
 
@@ -149,6 +244,7 @@ pub struct App {
     handler: Box<dyn AppHandler>,
     name: &'static str,
     last_save: Instant,
+    window_background: WindowBackground,
 }
 
 pub trait AppHandler {
@@ -157,6 +253,8 @@ pub trait AppHandler {
     fn save(&mut self, persistence: &mut Persistence);
 
     fn post_egui(&mut self, args: RenderArgs);
+
+    fn window_background(&self) -> WindowBackground;
 }
 
 impl App {
@@ -164,6 +262,14 @@ impl App {
     where
         F: FnOnce(&mut Persistence) -> Box<dyn AppHandler>,
     {
+        #[cfg(target_os = "windows")]
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            // WGPU's usual DXGI HWND swapchain is opaque on many Windows drivers. The OpenGL
+            // backend uses a composited surface that can preserve the alpha cleared by egui.
+            backends: wgpu::Backends::GL,
+            ..Default::default()
+        });
+        #[cfg(not(target_os = "windows"))]
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let mut persistence = Persistence::new(name, "WaveSync");
 
@@ -176,6 +282,7 @@ impl App {
             icon_data: icon,
             persistence,
             last_save: Instant::now(),
+            window_background: WindowBackground::Solid,
         }
     }
 
@@ -251,6 +358,24 @@ impl App {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        // Start every frame with transparent pixels so DWM can compose Mica/Acrylic behind the UI.
+        {
+            let _clear_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear transparent window background"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+        }
+
         let window = self.window.as_ref().unwrap();
 
         {
@@ -258,6 +383,12 @@ impl App {
 
             let ctx = state.egui_renderer.context();
             self.handler.update(ctx);
+
+            let requested_background = self.handler.window_background();
+            if requested_background != self.window_background {
+                requested_background.apply(window);
+                self.window_background = requested_background;
+            }
 
             state.egui_renderer.end_frame_and_draw(
                 &state.device,
@@ -322,7 +453,9 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let mut window_attributes = Window::default_attributes().with_title(self.name);
+        let mut window_attributes = Window::default_attributes()
+            .with_title(self.name)
+            .with_transparent(true);
         if let Some(window_data) = self.persistence.get::<WindowData>(WINDOW_KEY)
             && let Some(window_rect) = window_data.windows.get("main")
         {
@@ -372,6 +505,9 @@ impl ApplicationHandler for App {
         }
 
         let window = event_loop.create_window(window_attributes).unwrap();
+        let requested_background = self.handler.window_background();
+        requested_background.apply(&window);
+        self.window_background = requested_background;
         pollster::block_on(self.set_window(window));
     }
 
