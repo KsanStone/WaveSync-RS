@@ -36,16 +36,18 @@ impl WindowBackground {
             Self::Solid => {
                 let _ = window_vibrancy::clear_mica(window);
                 let _ = window_vibrancy::clear_acrylic(window);
-                window_vibrancy::clear_blur(window)
+                let _ = apply_legacy_acrylic(window, None);
+                window_vibrancy::clear_blur(window).map_err(|error| error.to_string())
             }
             Self::Mica => {
                 let _ = window_vibrancy::clear_blur(window);
-                window_vibrancy::apply_mica(window, Some(true))
+                let _ = apply_legacy_acrylic(window, None);
+                window_vibrancy::apply_mica(window, Some(true)).map_err(|error| error.to_string())
             }
             Self::Acrylic => {
                 let _ = window_vibrancy::clear_mica(window);
                 let _ = window_vibrancy::clear_blur(window);
-                window_vibrancy::apply_acrylic(window, Some((24, 25, 34, 110)))
+                apply_legacy_acrylic(window, Some((24, 25, 34, 110)))
             }
         };
 
@@ -92,6 +94,74 @@ impl WindowBackground {
     pub fn is_translucent(self) -> bool {
         !matches!(self, Self::Solid)
     }
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct AccentPolicy {
+    state: u32,
+    flags: u32,
+    gradient_color: u32,
+    animation_id: u32,
+}
+
+#[cfg(target_os = "windows")]
+#[repr(C)]
+struct WindowCompositionAttribData {
+    attribute: u32,
+    data: *mut std::ffi::c_void,
+    data_size: usize,
+}
+
+/// Uses the legacy acrylic compositor directly. Unlike the Windows 11 system backdrop, this is
+/// the path that can be re-applied after a window loses focus, matching Windows Terminal's
+/// compatibility behavior. `SetWindowCompositionAttribute` is undocumented, so failures simply
+/// leave the standard system backdrop in place.
+#[cfg(target_os = "windows")]
+fn apply_legacy_acrylic(window: &Window, color: Option<(u8, u8, u8, u8)>) -> Result<(), String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+    use windows::core::PCSTR;
+
+    type SetWindowCompositionAttribute = unsafe extern "system" fn(
+        HWND,
+        *mut WindowCompositionAttribData,
+    ) -> i32;
+
+    let handle = window.window_handle().map_err(|error| error.to_string())?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return Err("Window is not a Win32 window".into());
+    };
+    let module = unsafe { LoadLibraryA(PCSTR(c"user32.dll".as_ptr().cast())) }
+        .map_err(|error| error.to_string())?;
+    let proc = unsafe {
+        GetProcAddress(
+            module,
+            PCSTR(c"SetWindowCompositionAttribute".as_ptr().cast()),
+        )
+    }
+    .ok_or("SetWindowCompositionAttribute is unavailable")?;
+    let set_attribute: SetWindowCompositionAttribute = unsafe { std::mem::transmute(proc) };
+
+    let (r, g, b, a) = color.unwrap_or((0, 0, 0, 0));
+    let mut policy = AccentPolicy {
+        state: if color.is_some() { 4 } else { 0 }, // ACCENT_ENABLE_ACRYLICBLURBEHIND
+        flags: 0,
+        gradient_color: u32::from(r)
+            | (u32::from(g) << 8)
+            | (u32::from(b) << 16)
+            | (u32::from(a.max(1)) << 24),
+        animation_id: 0,
+    };
+    let mut data = WindowCompositionAttribData {
+        attribute: 0x13, // WCA_ACCENT_POLICY
+        data: (&mut policy as *mut AccentPolicy).cast(),
+        data_size: std::mem::size_of::<AccentPolicy>(),
+    };
+    let success = unsafe { set_attribute(HWND(handle.hwnd.get() as _), &mut data) };
+    (success != 0)
+        .then_some(())
+        .ok_or("SetWindowCompositionAttribute failed".into())
 }
 
 pub struct AppState {
@@ -531,6 +601,11 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(new_size) => {
                 self.handle_resized(new_size.width, new_size.height);
+            }
+            WindowEvent::Focused(_) if self.window_background == WindowBackground::Acrylic => {
+                // Windows can drop legacy acrylic when activation changes; request it again,
+                // as Windows Terminal does for its unfocused-acrylic compatibility mode.
+                self.window_background.apply(self.window.as_ref().unwrap());
             }
             _ => (),
         }
