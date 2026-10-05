@@ -20,13 +20,13 @@ impl Default for LoudnessIndicator {
 
 impl LoudnessIndicator {
     pub fn new() -> Self {
-        let axis = Axis::linear(-100.0, 0.0);
+        let axis = Axis::linear(-70.0, 0.0);
         let mut this = Self {
             smoother: MultiplicativeSmoother::new(),
             tick_cache: axis.tick_positions(200.0).major,
             axis,
         };
-        this.smoother.min = -100.0;
+        this.smoother.min = -70.0;
         this.smoother.max = 0.0;
         this
     }
@@ -37,6 +37,7 @@ impl LoudnessIndicator {
         dt: f32,
         visuals: &'a WaveSyncVisuals,
         height: f32,
+        unit: &'a str,
     ) -> LoudnessWidget<'a> {
         let vals = self.smoother.smooth_data(dt, vals).to_vec();
         LoudnessWidget {
@@ -45,6 +46,7 @@ impl LoudnessIndicator {
             axis: &self.axis,
             tics: &self.tick_cache,
             height,
+            unit,
         }
     }
 }
@@ -55,6 +57,7 @@ pub struct LoudnessWidget<'a> {
     axis: &'a Axis,
     tics: &'a [f32],
     height: f32,
+    unit: &'a str,
 }
 
 impl Widget for LoudnessWidget<'_> {
@@ -115,6 +118,6 @@ impl Widget for LoudnessWidget<'_> {
             );
         }
 
-        ui.response()
+        response.on_hover_text(format!("Momentary {} (400 ms, EBU R128)", self.unit))
     }
 }

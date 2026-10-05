@@ -17,7 +17,7 @@ impl Default for MultiplicativeSmoother {
 impl MultiplicativeSmoother {
     pub fn new() -> Self {
         Self {
-            factor: 0.5,
+            factor: 0.7,
             current_state: vec![],
             min: 0.0,
             max: 1.0,

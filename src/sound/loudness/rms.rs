@@ -20,7 +20,7 @@ impl RmsLoudnessMeter {
 }
 
 impl LoudnessMeter for RmsLoudnessMeter {
-    fn process_frame(&mut self, frame: &[Vec<f32>]) {
+    fn process_frame(&mut self, frame: &[Vec<f32>], _sample_rate: u32) {
         self.loudness.resize(frame.len(), 0.0);
 
         for (i, channel) in frame.iter().enumerate() {

@@ -1,6 +1,7 @@
 pub mod extended_waveform;
 pub mod spectrogram;
 pub mod spectrum;
+pub mod stereo_imager;
 pub mod vectorscope;
 pub mod visualizer_widget;
 pub mod waveform;
@@ -11,4 +12,5 @@ pub enum VisualizerType {
     Spectrum,
     Vectorscope,
     Waveform,
+    StereoImager,
 }

@@ -13,6 +13,7 @@ use crate::ui::visualizer::extended_waveform::{
 };
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
+use crate::ui::visualizer::stereo_imager::StereoImagerVisualizer;
 use crate::ui::visualizer::vectorscope::{VectorscopeSettings, VectorscopeVisualizer};
 use crate::ui::visualizer::visualizer_widget::{RenderArgs, Visualizer, VisualizerWidget};
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
@@ -37,6 +38,7 @@ pub struct WaveSync {
     extended_waveform_visualizers: Vec<ExtendedWaveformVisualizer>,
     spectrogram_visualizer: SpectrogramVisualizer,
     vectorscope_visualizer: VectorscopeVisualizer,
+    stereo_imager_visualizer: StereoImagerVisualizer,
     settings_shown: bool,
     last_update: Instant,
     visuals: WaveSyncVisuals,
@@ -173,6 +175,8 @@ impl WaveSync {
             SpectrogramVisualizer::new(audio_service.clone(), AudioChannel::Master, data.clone());
         let vectorscope_visualizer =
             VectorscopeVisualizer::new(audio_service.clone(), data.clone());
+        let stereo_imager_visualizer =
+            StereoImagerVisualizer::new(audio_service.clone(), data.clone());
 
         // Note: this IS a circular reference
         // But its fine as both the vis, and the audio service, will never be dropper,
@@ -183,6 +187,7 @@ impl WaveSync {
             waveform_visualizers,
             spectrum_visualizers,
             spectrogram_visualizer,
+            stereo_imager_visualizer,
             vectorscope_visualizer,
             extended_waveform_visualizers,
             audio_service,
@@ -250,12 +255,14 @@ impl WaveSync {
     }
 
     fn stereo_layout(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let left_column_width = ui.available_width() / 3.0;
         StripBuilder::new(ui)
-            .sizes(Size::remainder(), 3)
+            .size(Size::exact(left_column_width))
+            .size(Size::remainder())
             .horizontal(|mut strip| {
                 strip.cell(|ui| {
                     StripBuilder::new(ui)
-                        .sizes(Size::remainder(), 2)
+                        .sizes(Size::remainder(), 3)
                         .vertical(|mut strip| {
                             strip.cell(|ui| {
                                 let mut rect = Rect::ZERO;
@@ -273,6 +280,15 @@ impl WaveSync {
                                 );
                             });
 
+                            // stereo imager
+                            strip.cell(|ui| {
+                                ui.add(VisualizerWidget::new(
+                                    Box::new(self.stereo_imager_visualizer.clone()),
+                                    ctx,
+                                    &self.visuals,
+                                ));
+                            });
+
                             strip.cell(|ui| {
                                 ui.add(VisualizerWidget::new(
                                     Box::new(self.spectrogram_visualizer.clone()),
@@ -283,37 +299,62 @@ impl WaveSync {
                         });
                 });
 
-                for i in 1..3 {
-                    strip.cell(|ui| {
-                        StripBuilder::new(ui)
-                            .sizes(Size::remainder(), 3)
-                            .vertical(|mut strip| {
-                                strip.cell(|ui| {
-                                    ui.add(VisualizerWidget::new(
-                                        Box::new(self.waveform_visualizers[i].clone()),
-                                        ctx,
-                                        &self.visuals,
-                                    ));
-                                });
-
-                                strip.cell(|ui| {
-                                    ui.add(VisualizerWidget::new(
-                                        Box::new(self.spectrum_visualizers[i].clone()),
-                                        ctx,
-                                        &self.visuals,
-                                    ));
-                                });
-
-                                strip.cell(|ui| {
-                                    ui.add(VisualizerWidget::new(
-                                        Box::new(self.extended_waveform_visualizers[i].clone()),
-                                        ctx,
-                                        &self.visuals,
-                                    ));
-                                })
+                strip.cell(|ui| {
+                    StripBuilder::new(ui)
+                        .sizes(Size::remainder(), 3)
+                        .vertical(|mut strip| {
+                            strip.cell(|ui| {
+                                StripBuilder::new(ui)
+                                    .sizes(Size::remainder(), 2)
+                                    .horizontal(|mut strip| {
+                                        for i in 1..3 {
+                                            strip.cell(|ui| {
+                                                ui.add(VisualizerWidget::new(
+                                                    Box::new(self.waveform_visualizers[i].clone()),
+                                                    ctx,
+                                                    &self.visuals,
+                                                ));
+                                            });
+                                        }
+                                    });
                             });
-                    });
-                }
+
+                            strip.cell(|ui| {
+                                StripBuilder::new(ui)
+                                    .sizes(Size::remainder(), 2)
+                                    .horizontal(|mut strip| {
+                                        for i in 1..3 {
+                                            strip.cell(|ui| {
+                                                ui.add(VisualizerWidget::new(
+                                                    Box::new(self.spectrum_visualizers[i].clone()),
+                                                    ctx,
+                                                    &self.visuals,
+                                                ));
+                                            });
+                                        }
+                                    });
+                            });
+
+                            strip.cell(|ui| {
+                                StripBuilder::new(ui).sizes(Size::remainder(), 2).vertical(
+                                    |mut strip| {
+                                        for i in 1..3 {
+                                            strip.cell(|ui| {
+                                                ui.add(VisualizerWidget::new(
+                                                    Box::new(
+                                                        self.extended_waveform_visualizers[i]
+                                                            .clone(),
+                                                    ),
+                                                    ctx,
+                                                    &self.visuals,
+                                                ));
+                                            });
+                                        }
+                                    },
+                                );
+                            });
+                        });
+                });
             });
     }
 }
@@ -335,79 +376,77 @@ impl AppHandler for WaveSync {
 
         let mut bottom_panel = egui::TopBottomPanel::bottom("bottom_bar").resizable(false);
         if self.visuals.translucent_background() {
-            bottom_panel = bottom_panel.frame(
-                egui::Frame::default().fill(self.visuals.background_overlay()),
-            );
+            bottom_panel =
+                bottom_panel.frame(egui::Frame::default().fill(self.visuals.background_overlay()));
         }
-        bottom_panel
-            .show(ctx, |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let mut height = 24.0;
-                    ui.ctx().fonts(|fonts| {
-                        height = fonts.row_height(&FontId::monospace(LOUDNESS_FONT_SIZE))
-                            * FREQ_LABEL_ROW_COUNT as f32;
-                    });
-
-                    if ui
-                        .add(
-                            Button::new(egui_phosphor::regular::GEAR)
-                                .min_size(Vec2::new(height, height)),
-                        )
-                        .clicked()
-                    {
-                        self.settings_shown = true;
-                    }
-
-                    let sources = self.audio_service.available_sources.lock().unwrap();
-                    let mut current_value = self.audio_service.get_source().id;
-                    egui::ComboBox::from_id_salt("source_select")
-                        .selected_text(self.audio_service.get_source().name)
-                        .show_ui(ui, |ui| {
-                            for source in &*sources {
-                                ui.selectable_value(
-                                    &mut current_value,
-                                    source.id.clone(),
-                                    source.name.clone(),
-                                );
-                            }
-                        });
-                    drop(sources);
-                    self.audio_service.update_source(current_value);
-
-                    if let Some(media) = self.media_provider.current_media() {
-                        media_card(ui, ctx, &media, &mut self.media_texture, height);
-                    } else {
-                        self.media_texture = None;
-                    }
-
-                    peak_labels(ui, self.audio_service.get_peak_labels(), height);
-
-                    if let Some(dummy) =
-                        self.audio_service
-                            .audio_backend
-                            .lock()
-                            .unwrap()
-                            .as_any()
-                            .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>()
-                    {
-                        let mut seq = dummy.pattern_data.sequencer_frequency.lock().unwrap();
-                        ui.add(egui::Slider::new(&mut *seq, 20.0..=1000.0));
-                    }
-
-                    ui.add(self.loudness_indicator.ui(
-                        &self.audio_service.get_loudness_values(),
-                        delta_t,
-                        &self.visuals,
-                        height,
-                    ));
+        bottom_panel.show(ctx, |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                let mut height = 24.0;
+                ui.ctx().fonts(|fonts| {
+                    height = fonts.row_height(&FontId::monospace(LOUDNESS_FONT_SIZE))
+                        * FREQ_LABEL_ROW_COUNT as f32;
                 });
+
+                if ui
+                    .add(
+                        Button::new(egui_phosphor::regular::GEAR)
+                            .min_size(Vec2::new(height, height)),
+                    )
+                    .clicked()
+                {
+                    self.settings_shown = true;
+                }
+
+                let sources = self.audio_service.available_sources.lock().unwrap();
+                let mut current_value = self.audio_service.get_source().id;
+                egui::ComboBox::from_id_salt("source_select")
+                    .selected_text(self.audio_service.get_source().name)
+                    .show_ui(ui, |ui| {
+                        for source in &*sources {
+                            ui.selectable_value(
+                                &mut current_value,
+                                source.id.clone(),
+                                source.name.clone(),
+                            );
+                        }
+                    });
+                drop(sources);
+                self.audio_service.update_source(current_value);
+
+                if let Some(media) = self.media_provider.current_media() {
+                    media_card(ui, ctx, &media, &mut self.media_texture, height);
+                } else {
+                    self.media_texture = None;
+                }
+
+                peak_labels(ui, self.audio_service.get_peak_labels(), height);
+
+                if let Some(dummy) =
+                    self.audio_service
+                        .audio_backend
+                        .lock()
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>()
+                {
+                    let mut seq = dummy.pattern_data.sequencer_frequency.lock().unwrap();
+                    ui.add(egui::Slider::new(&mut *seq, 20.0..=1000.0));
+                }
+
+                ui.add(self.loudness_indicator.ui(
+                    &self.audio_service.get_loudness_values(),
+                    delta_t,
+                    &self.visuals,
+                    height,
+                    self.audio_service.get_loudness_unit(),
+                ));
             });
+        });
 
         let mut central_panel = egui::CentralPanel::default();
         if self.visuals.translucent_background() {
-            central_panel = central_panel.frame(
-                egui::Frame::default().fill(self.visuals.background_overlay()),
-            );
+            central_panel =
+                central_panel.frame(egui::Frame::default().fill(self.visuals.background_overlay()));
         }
         central_panel.show(ctx, |ui| {
             if self.audio_service.get_active_audio_channels() == 1 {
@@ -556,7 +595,11 @@ fn media_card(
             ui.add(egui::Label::new(RichText::new(subtitle).small().weak()).truncate());
             if !media.duration.is_zero() {
                 let progress = media.position.as_secs_f32() / media.duration.as_secs_f32();
-                ui.add(egui::ProgressBar::new(progress.clamp(0.0, 1.0)).desired_width(180.0).desired_height(3.0));
+                ui.add(
+                    egui::ProgressBar::new(progress.clamp(0.0, 1.0))
+                        .desired_width(180.0)
+                        .desired_height(3.0),
+                );
             }
         },
     );

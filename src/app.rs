@@ -81,9 +81,9 @@ impl WindowBackground {
         } else {
             MARGINS::default()
         };
-        if let Err(error) = unsafe {
-            DwmExtendFrameIntoClientArea(HWND(handle.hwnd.get() as _), &margins)
-        } {
+        if let Err(error) =
+            unsafe { DwmExtendFrameIntoClientArea(HWND(handle.hwnd.get() as _), &margins) }
+        {
             debug!("Could not extend DWM frame into client area: {error}");
         }
     }
@@ -123,10 +123,8 @@ fn apply_legacy_acrylic(window: &Window, color: Option<(u8, u8, u8, u8)>) -> Res
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
     use windows::core::PCSTR;
 
-    type SetWindowCompositionAttribute = unsafe extern "system" fn(
-        HWND,
-        *mut WindowCompositionAttribData,
-    ) -> i32;
+    type SetWindowCompositionAttribute =
+        unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> i32;
 
     let handle = window.window_handle().map_err(|error| error.to_string())?;
     let RawWindowHandle::Win32(handle) = handle.as_raw() else {
@@ -498,7 +496,10 @@ impl App {
         let position = window.outer_position();
 
         if size.width == 0 || size.height == 0 {
-            debug!("Not saving window position because size is zero: {:?}", size);
+            debug!(
+                "Not saving window position because size is zero: {:?}",
+                size
+            );
             return;
         }
 

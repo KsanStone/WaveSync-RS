@@ -299,7 +299,10 @@ impl AudioBackend for CpalAudioBackend {
     }
 }
 
-fn pick_loopback_config(dev: &cpal::Device, native_sample_rate: u32) -> anyhow::Result<StreamConfig> {
+fn pick_loopback_config(
+    dev: &cpal::Device,
+    native_sample_rate: u32,
+) -> anyhow::Result<StreamConfig> {
     let mut configs = dev.supported_output_configs()?;
 
     let cfg = configs

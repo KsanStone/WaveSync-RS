@@ -2,7 +2,7 @@ use crate::deref_arc;
 use crate::sound::capture_source::CaptureSource;
 use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::loudness::LoudnessMeter;
-use crate::sound::loudness::rms::RmsLoudnessMeter;
+use crate::sound::loudness::lufs::LufsLoudnessMeter;
 use crate::sound::windowing::{FftWindow, WindowMethod};
 use crate::sound::{AudioChannel, FftPeak, estimate_frequency_peak};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
@@ -50,7 +50,7 @@ impl AudioService {
             fft_window: Mutex::new(FftWindow::new(WindowMethod::Hamming)),
             available_sources: Mutex::new(vec![]),
             fft_listeners: Mutex::new(vec![]),
-            loudness_meter: Mutex::new(Box::new(RmsLoudnessMeter::new())),
+            loudness_meter: Mutex::new(Box::new(LufsLoudnessMeter::new())),
         }))
     }
 
@@ -198,7 +198,7 @@ impl Inner {
 
     fn do_loudness_calc(&self, samples: &[Vec<f32>]) {
         let mut loudness_meter = self.loudness_meter.lock().unwrap();
-        loudness_meter.process_frame(samples);
+        loudness_meter.process_frame(samples, self.get_source().sample_rate);
     }
 
     fn do_fft(&self, channels: usize) {
@@ -386,5 +386,10 @@ impl Inner {
     pub fn get_loudness_values(&self) -> Vec<f32> {
         let meter = self.loudness_meter.lock().unwrap();
         meter.get_loudness()
+    }
+
+    pub fn get_loudness_unit(&self) -> &'static str {
+        let meter = self.loudness_meter.lock().unwrap();
+        meter.unit()
     }
 }

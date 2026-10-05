@@ -15,8 +15,11 @@ const MARGIN: i8 = 5;
 pub struct PlotData {
     pub x_axis: Axis,
     pub x_axis_shown: bool,
+    pub x_axis_grid_lines_shown: bool,
+
     pub y_axis: Axis,
     pub y_axis_shown: bool,
+    pub y_axis_grid_lines_shown: bool,
 }
 
 impl Default for PlotData {
@@ -36,6 +39,8 @@ impl Default for PlotData {
                 always_show_zero: false,
             },
             y_axis_shown: true,
+            x_axis_grid_lines_shown: true,
+            y_axis_grid_lines_shown: true,
         }
     }
 }
@@ -45,8 +50,10 @@ impl PlotData {
         Self {
             x_axis,
             x_axis_shown: true,
+            x_axis_grid_lines_shown: true,
             y_axis,
             y_axis_shown: true,
+            y_axis_grid_lines_shown: true,
         }
     }
 
@@ -56,9 +63,18 @@ impl PlotData {
         self
     }
 
-    #[allow(unused)]
     pub fn y_axis_shown(mut self, y_axis_shown: bool) -> Self {
         self.y_axis_shown = y_axis_shown;
+        self
+    }
+
+    pub fn x_axis_grid_lines_shown(mut self, x_axis_grid_lines_shown: bool) -> Self {
+        self.x_axis_grid_lines_shown = x_axis_grid_lines_shown;
+        self
+    }
+
+    pub fn y_axis_grid_lines_shown(mut self, y_axis_grid_lines_shown: bool) -> Self {
+        self.y_axis_grid_lines_shown = y_axis_grid_lines_shown;
         self
     }
 }
@@ -280,19 +296,23 @@ impl<'a> Plot<'a> {
 
         if self.plot_data.x_axis_shown {
             let ticks = self.plot_data.x_axis.tick_positions(content_rect.width());
-            for &pos in &ticks.major {
-                let px_pos =
-                    self.plot_data
-                        .x_axis
-                        .val_to_pos(pos, content_rect.min.x, content_rect.max.x);
-                painter.line_segment(
-                    [
-                        Pos2::new(px_pos, content_rect.min.y),
-                        Pos2::new(px_pos, content_rect.max.y + TICK_SIZE * 2.0),
-                    ],
-                    (1.0, self.grid_color),
-                );
+            if self.plot_data.x_axis_grid_lines_shown {
+                for &pos in &ticks.major {
+                    let px_pos = self.plot_data.x_axis.val_to_pos(
+                        pos,
+                        content_rect.min.x,
+                        content_rect.max.x,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(px_pos, content_rect.min.y),
+                            Pos2::new(px_pos, content_rect.max.y + TICK_SIZE * 2.0),
+                        ],
+                        (1.0, self.grid_color),
+                    );
+                }
             }
+
             for pos in prioritized_label_positions(&ticks.major, self.plot_data.x_axis.logarithmic)
             {
                 let px_pos =
@@ -309,6 +329,7 @@ impl<'a> Plot<'a> {
                     &mut occupied_label_rects,
                 );
             }
+
             for &pos in &ticks.minor {
                 let px_pos =
                     self.plot_data
@@ -326,6 +347,7 @@ impl<'a> Plot<'a> {
             if self.plot_data.x_axis.always_show_zero
                 && self.plot_data.x_axis.min < 0.0
                 && self.plot_data.x_axis.max > 0.0
+                && self.plot_data.x_axis_grid_lines_shown
             {
                 let px_pos =
                     self.plot_data
@@ -343,19 +365,23 @@ impl<'a> Plot<'a> {
 
         if self.plot_data.y_axis_shown {
             let ticks = self.plot_data.y_axis.tick_positions(content_rect.height());
-            for &pos in &ticks.major {
-                let px_pos =
-                    self.plot_data
-                        .y_axis
-                        .val_to_pos(pos, content_rect.max.y, content_rect.min.y);
-                painter.line_segment(
-                    [
-                        Pos2::new(content_rect.min.x - TICK_SIZE * 2.0, px_pos),
-                        Pos2::new(content_rect.max.x, px_pos),
-                    ],
-                    (1.0, self.grid_color),
-                );
+            if self.plot_data.y_axis_grid_lines_shown {
+                for &pos in &ticks.major {
+                    let px_pos = self.plot_data.y_axis.val_to_pos(
+                        pos,
+                        content_rect.max.y,
+                        content_rect.min.y,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(content_rect.min.x - TICK_SIZE * 2.0, px_pos),
+                            Pos2::new(content_rect.max.x, px_pos),
+                        ],
+                        (1.0, self.grid_color),
+                    );
+                }
             }
+
             for pos in prioritized_label_positions(&ticks.major, self.plot_data.y_axis.logarithmic)
             {
                 let px_pos =
@@ -389,6 +415,7 @@ impl<'a> Plot<'a> {
             if self.plot_data.y_axis.always_show_zero
                 && self.plot_data.y_axis.min < 0.0
                 && self.plot_data.y_axis.max > 0.0
+                && self.plot_data.y_axis_grid_lines_shown
             {
                 let px_pos =
                     self.plot_data
