@@ -3,7 +3,7 @@ use crate::sound::smoothing::FloatArraySmoother;
 use crate::sound::smoothing::exponential_falloff_smoother::ExponentialFalloffSmoother;
 use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
 use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
-use crate::ui::plot::{Axis, PlotData};
+use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
     QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, catmull_rom_spline, create_pipeline,
@@ -98,12 +98,12 @@ impl SpectrumVisualizer {
 impl Visualizer for SpectrumVisualizer {
     fn get_plot_data(&self) -> PlotData {
         let settings = &self.data.read().unwrap().spectrum_settings;
-        let mut data = PlotData::from_axis(
+        let mut data = XYPlotData::from_axis(
             Axis::linear(settings.freq_min as f32, settings.freq_max as f32),
             Axis::linear(-100.0, 0.0),
         );
         data.x_axis.logarithmic = settings.frequency_axis_logarithmic;
-        data
+        PlotData::XY(data)
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
@@ -366,7 +366,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         _callback_resources: &CallbackResources,
     ) {
         let resources = self.visualizer.render_resources.lock().unwrap();
-        let plot_data = self.visualizer.get_plot_data();
+        let plot_data = self.visualizer.get_plot_data().expect_xy();
         let smoother_factor = {
             self.visualizer
                 .data

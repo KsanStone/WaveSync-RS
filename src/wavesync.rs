@@ -179,7 +179,7 @@ impl WaveSync {
             StereoImagerVisualizer::new(audio_service.clone(), data.clone());
 
         // Note: this IS a circular reference
-        // But its fine as both the vis, and the audio service, will never be dropper,
+        // But its fine as both the vis, and the audio service, will never be dropped,
         // so its fine that they will always be alive in memory.
         audio_service.register_fft_listener(Box::new(spectrogram_visualizer.clone()));
 

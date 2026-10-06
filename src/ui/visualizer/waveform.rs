@@ -1,6 +1,6 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
-use crate::ui::plot::{Axis, PlotData};
+use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
@@ -68,11 +68,11 @@ impl WaveformVisualizer {
 impl Visualizer for WaveformVisualizer {
     fn get_plot_data(&self) -> PlotData {
         let range = self.data.read().unwrap().waveform_settings.range;
-        PlotData::from_axis(
+        PlotData::XY(XYPlotData::from_axis(
             Axis::linear(0.0, 1.0),
             Axis::linear(-range, range).always_show_zero(true),
         )
-        .x_axis_shown(false)
+        .x_axis_shown(false))
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
@@ -207,7 +207,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
         let settings = &self.visualizer.data.read().unwrap().waveform_settings;
         let source = self.visualizer.audio_service.get_source();
         let audio_service = &self.visualizer.audio_service;
-        let plot_data = self.visualizer.get_plot_data();
+        let plot_data = self.visualizer.get_plot_data().expect_xy();
         let resources = self.visualizer.render_resources.lock().unwrap();
         if let Some(resources) = resources.as_ref() {
             let queue = &resources.queue;

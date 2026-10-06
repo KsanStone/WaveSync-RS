@@ -3,6 +3,10 @@ use egui::epaint::Color32;
 use egui::{Align2, FontFamily, FontId, Margin, Painter, Rect, Sense, Ui};
 use std::ops::Sub;
 
+mod polar;
+
+pub use crate::ui::plot::polar::*;
+
 const PLOT_DIGITS: usize = 2;
 const X_AXIS_WIDTH: i8 = 20;
 const Y_AXIS_WIDTH: i8 = 30;
@@ -12,7 +16,29 @@ const LABEL_SPACING: f32 = 2.0;
 const MARGIN: i8 = 5;
 
 #[derive(Clone)]
-pub struct PlotData {
+pub enum PlotData {
+    XY(XYPlotData),
+    Polar(PolarPlotData),
+}
+
+impl PlotData {
+    pub fn expect_xy(&self) -> XYPlotData {
+        match self {
+            PlotData::XY(data) => data.clone(),
+            _ => panic!("Expected XYPlotData, but got PolarPlotData"),
+        }
+    }
+
+    pub fn expect_polar(&self) -> PolarPlotData {
+        match self {
+            PlotData::Polar(data) => data.clone(),
+            _ => panic!("Expected PolarPlotData, but got XYPlotData"),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct XYPlotData {
     pub x_axis: Axis,
     pub x_axis_shown: bool,
     pub x_axis_grid_lines_shown: bool,
@@ -22,7 +48,7 @@ pub struct PlotData {
     pub y_axis_grid_lines_shown: bool,
 }
 
-impl Default for PlotData {
+impl Default for XYPlotData {
     fn default() -> Self {
         Self {
             x_axis: Axis {
@@ -45,7 +71,7 @@ impl Default for PlotData {
     }
 }
 
-impl PlotData {
+impl XYPlotData {
     pub fn from_axis(x_axis: Axis, y_axis: Axis) -> Self {
         Self {
             x_axis,
@@ -242,14 +268,14 @@ impl Axis {
 
 /// Generic plot, to be used as a background for the visualizers.
 pub struct Plot<'a> {
-    plot_data: &'a mut PlotData,
+    plot_data: &'a mut XYPlotData,
     grid_color: Color32,
     label_color: Color32,
     zero_line_color: Color32,
 }
 
 impl<'a> Plot<'a> {
-    pub fn new(data: &'a mut PlotData) -> Self {
+    pub fn new(data: &'a mut XYPlotData) -> Self {
         Self {
             plot_data: data,
             grid_color: Color32::from_gray(50),

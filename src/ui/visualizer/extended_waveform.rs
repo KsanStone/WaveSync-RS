@@ -1,7 +1,7 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::sound::loudness::rms::calc_rms;
-use crate::ui::plot::{Axis, PlotData};
+use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{Ui, VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
@@ -70,11 +70,13 @@ struct Uniforms {
 impl Visualizer for ExtendedWaveformVisualizer {
     fn get_plot_data(&self) -> PlotData {
         let range = self.data.read().unwrap().extended_waveform_settings.range;
-        PlotData::from_axis(
-            Axis::linear(-1.0, 0.0),
-            Axis::linear(-range, range).always_show_zero(true),
+        PlotData::XY(
+            XYPlotData::from_axis(
+                Axis::linear(-1.0, 0.0),
+                Axis::linear(-range, range).always_show_zero(true),
+            )
+            .x_axis_shown(false),
         )
-        .x_axis_shown(false)
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
@@ -195,7 +197,7 @@ impl CallbackTrait for ExtendedWaveformVisualizerCallback {
 
             let mut vertices = Vec::with_capacity(width * 2);
             let mut rms_vertices = Vec::with_capacity(width * 2);
-            let plot_data = self.visualizer.get_plot_data();
+            let plot_data = self.visualizer.get_plot_data().expect_xy();
 
             {
                 let buf = &self.visualizer.audio_service.audio_buffer.lock().unwrap()

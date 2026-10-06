@@ -1,6 +1,6 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
-use crate::ui::plot::{Axis, PlotData};
+use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::vectorscope::egui::Ui;
 use crate::ui::visualizer::visualizer_widget::{PostEquiRender, RenderArgs, Visualizer};
 use crate::ui::{
@@ -55,7 +55,7 @@ impl Visualizer for VectorscopeVisualizer {
         let range = self.data.read().unwrap().vectorscope_settings.range;
         let x_axis = Axis::linear(-range, range).always_show_zero(true);
         let y_axis = Axis::linear(-range, range).always_show_zero(true);
-        PlotData::from_axis(x_axis, y_axis)
+        PlotData::XY(XYPlotData::from_axis(x_axis, y_axis))
     }
 
     fn error_message(&self) -> Option<String> {
@@ -400,7 +400,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
 impl PostEquiRender for VectorscopeVisualizerCallback {
     fn post_egui_render(&self, args: &mut RenderArgs) {
         let resources = self.visualizer.render_resources.lock().unwrap();
-        let plot_data = self.visualizer.get_plot_data();
+        let plot_data = self.visualizer.get_plot_data().expect_xy();
         if let Some(resources) = resources.as_ref() {
             let queue = &resources.queue;
             let audio_service = &self.visualizer.audio_service;

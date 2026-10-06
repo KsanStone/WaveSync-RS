@@ -1,7 +1,7 @@
 use crate::sound::audio_service::{AudioService, CHANNELS};
 use crate::sound::{AudioChannel, scale_to_db};
 use crate::ui::gradient::Gradient;
-use crate::ui::plot::{Axis, PlotData};
+use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
     FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, bind_buff, create_bind_group_with_layout,
@@ -113,9 +113,9 @@ impl Visualizer for SpectrogramVisualizer {
         let mut freq_axis = Axis::linear(settings.freq_min as f32, settings.freq_max as f32);
         freq_axis.logarithmic = settings.frequency_axis_logarithmic;
         if settings.is_vertical {
-            PlotData::from_axis(freq_axis, db_axis)
+            PlotData::XY(XYPlotData::from_axis(freq_axis, db_axis))
         } else {
-            PlotData::from_axis(db_axis, freq_axis)
+            PlotData::XY(XYPlotData::from_axis(db_axis, freq_axis))
         }
     }
 
@@ -350,7 +350,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
 
         if let Some(resources) = resources.as_ref() {
             let queue = &resources.queue;
-            let plot_data = self.visualizer.get_plot_data();
+            let plot_data = self.visualizer.get_plot_data().expect_xy();
             let source = self.visualizer.audio_service.get_source();
             let mut current_gradient = self.visualizer.current_gradient.lock().unwrap();
             let settings = &self.visualizer.data.read().unwrap().spectrogram_settings;

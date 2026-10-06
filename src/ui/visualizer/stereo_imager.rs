@@ -2,26 +2,26 @@ use crate::{
     deref_arc, impl_settings,
     sound::{
         AudioChannel,
-        audio_service::{self, AudioService},
+        audio_service::AudioService,
         scale_to_db,
         smoothing::{FloatArraySmoother, multiplicative_smoother::MultiplicativeSmoother},
     },
     ui::{
         VERTEX_2D_BUFFER_LAYOUT, create_pipeline,
-        plot::{Axis, PlotData},
+        plot::{PlotData, PolarPlotData},
         uniform_bindings,
-        visualizer::visualizer_widget::{PostEquiRender, Visualizer},
+        visualizer::visualizer_widget::Visualizer,
     },
     wavesync::{WaveSyncAppData, WaveSyncVisuals},
 };
-use egui::Ui;
-use egui::{Color32, PaintCallback, PaintCallbackInfo, Rect, Slider};
+use egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
+use egui::{Pos2, Ui};
 use egui_wgpu::{
     CallbackTrait,
     wgpu::{self, BufferAddress, util::DeviceExt},
 };
 use std::{
-    f32::consts::SQRT_2,
+    f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2},
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64},
@@ -32,13 +32,14 @@ use std::{ops::Add, sync::atomic::Ordering};
 
 deref_arc!(StereoImagerVisualizer);
 
-const DIRECTION_BINS: usize = 128;
+const DIRECTION_BINS: usize = 33;
 const MAX_SAMPLES_TO_READ_PER_FRAME: usize = 8192;
 
 pub struct Inner {
     audio_service: AudioService,
     settings_open: AtomicBool,
     data: Arc<RwLock<WaveSyncAppData>>,
+    bin_data: Mutex<[f32; DIRECTION_BINS]>,
     last_written: AtomicU64,
     last_draw: Mutex<Instant>,
     render_resources: Mutex<Option<RenderResources>>,
@@ -47,31 +48,44 @@ pub struct Inner {
 
 struct RenderResources {
     queue: wgpu::Queue,
-    vertex_buffer: wgpu::Buffer,
-    uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    pipeline: wgpu::RenderPipeline,
+    line_vertex_buffer: wgpu::Buffer,
+    fill_vertex_buffer: wgpu::Buffer,
+    line_uniform_buffer: wgpu::Buffer,
+    fill_uniform_buffer: wgpu::Buffer,
+    line_bind_group: wgpu::BindGroup,
+    fill_bind_group: wgpu::BindGroup,
+    line_pipeline: wgpu::RenderPipeline,
+    fill_pipeline: wgpu::RenderPipeline,
 }
 
 impl StereoImagerVisualizer {
     pub fn new(audio_service: AudioService, data: Arc<RwLock<WaveSyncAppData>>) -> Self {
+        let mut smoother = MultiplicativeSmoother::new();
+        smoother.set_factor(0.95);
         Self(Arc::new(Inner {
             audio_service,
             settings_open: Default::default(),
             data,
             last_written: Default::default(),
             last_draw: Mutex::new(Instant::now()),
-            smoother: Mutex::new(Some(Box::new(MultiplicativeSmoother::new()))),
+            smoother: Mutex::new(Some(Box::new(smoother))),
             render_resources: Default::default(),
+            bin_data: Mutex::new([0.0; DIRECTION_BINS]),
         }))
     }
 }
 
 impl Visualizer for StereoImagerVisualizer {
     fn get_plot_data(&self) -> PlotData {
-        let x_axis = Axis::linear(-1.0, 1.0).always_show_zero(true);
-        let y_axis = Axis::linear(0.0, 1.0).always_show_zero(true);
-        PlotData::from_axis(x_axis, y_axis).y_axis_shown(false).x_axis_grid_lines_shown(false)
+        PlotData::Polar(
+            PolarPlotData::new()
+                .with_radius(1.0)
+                .with_radial_lines(vec![0.0, FRAC_PI_2, FRAC_PI_4, FRAC_PI_2 + FRAC_PI_4, PI])
+                .with_viewport(Rect::from_min_max(
+                    Pos2::new(-1.0, 0.0),
+                    Pos2::new(1.0, 1.0),
+                )),
+        )
     }
 
     fn error_message(&self) -> Option<String> {
@@ -87,7 +101,8 @@ impl Visualizer for StereoImagerVisualizer {
             rect,
             StereoImagerVisualizerCallback {
                 visualizer: self.clone(),
-                color: visuals.wave_color(),
+                color_start: visuals.color_start(),
+                color_end: visuals.color_end(),
             },
         ))
     }
@@ -97,13 +112,24 @@ impl Visualizer for StereoImagerVisualizer {
 
 struct StereoImagerVisualizerCallback {
     visualizer: StereoImagerVisualizer,
-    color: Color32,
+    color_start: Color32,
+    color_end: Color32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
     color: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct FillUniforms {
+    end_color: [f32; 4],
+    start_color: [f32; 4],
+    gradient_center: [f32; 2],
+    gradient_radius: f32,
+    _padding: f32, // Padding to make the struct size a multiple of 16 bytes
 }
 
 impl CallbackTrait for StereoImagerVisualizerCallback {
@@ -125,41 +151,92 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 mapped_at_creation: false,
             });
 
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            let fill_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("stereo_imager_fill_buffer"),
+                size: ((DIRECTION_BINS * 3) * size_of::<f32>() * 2) as BufferAddress,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+            let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("line shader"),
                 source: wgpu::ShaderSource::Wgsl(
                     include_str!("../../../shader/colored_line.wgsl").into(),
                 ),
             });
 
-            let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("waveform_uniform_buffer"),
-                contents: bytemuck::cast_slice(&[Uniforms {
-                    color: [1.0, 0.0, 1.0, 1.0],
-                }]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            let grad_fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("grad fill shader"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../../../shader/radial_gradient_fill.wgsl").into(),
+                ),
             });
-            let (bind_group_layout, bind_group) =
-                uniform_bindings(device, 0, &uniform_buffer, "waveform");
 
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("waveform layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
+            let line_uniform_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("waveform_uniform_buffer"),
+                    contents: bytemuck::cast_slice(&[Uniforms {
+                        color: [1.0, 0.0, 1.0, 1.0],
+                    }]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+
+            let fill_uniform_buffer =
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("waveform_uniform_buffer"),
+                    contents: bytemuck::cast_slice(&[FillUniforms {
+                        end_color: [1.0, 0.0, 1.0, 1.0],
+                        start_color: [0.0, 1.0, 0.0, 1.0],
+                        gradient_center: [0.5, 0.5],
+                        gradient_radius: 0.5,
+                        _padding: 0.0,
+                    }]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                });
+
+            let (line_bind_group_layout, line_bind_group) =
+                uniform_bindings(device, 0, &line_uniform_buffer, "waveform");
+
+            let (fill_bind_group_layout, fill_bind_group) =
+                uniform_bindings(device, 0, &fill_uniform_buffer, "waveform");
+
+            let line_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("stereoimager line layout"),
+                    bind_group_layouts: &[&line_bind_group_layout],
+                    push_constant_ranges: &[],
+                });
+
+            let fill_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("stereoimager fill layout"),
+                    bind_group_layouts: &[&fill_bind_group_layout],
+                    push_constant_ranges: &[],
+                });
 
             *resources = Some(RenderResources {
                 queue: queue.clone(),
-                vertex_buffer,
-                uniform_buffer,
-                bind_group,
-                pipeline: create_pipeline(
+                line_vertex_buffer: vertex_buffer,
+                fill_vertex_buffer: fill_buffer,
+                line_uniform_buffer,
+                fill_uniform_buffer,
+                line_bind_group,
+                fill_bind_group,
+                line_pipeline: create_pipeline(
                     device,
-                    &shader,
-                    &pipeline_layout,
+                    &line_shader,
+                    &line_pipeline_layout,
                     wgpu::PrimitiveTopology::LineStrip,
                     &[VERTEX_2D_BUFFER_LAYOUT],
                     "stereo_imager_pipeline",
+                ),
+                fill_pipeline: create_pipeline(
+                    device,
+                    &grad_fill_shader,
+                    &fill_pipeline_layout,
+                    wgpu::PrimitiveTopology::TriangleList,
+                    &[VERTEX_2D_BUFFER_LAYOUT],
+                    "stereo_imager_fill_pipeline",
                 ),
             });
         }
@@ -169,20 +246,20 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
 
     fn paint(
         &self,
-        info: PaintCallbackInfo,
+        _info: PaintCallbackInfo,
         render_pass: &mut egui_wgpu::wgpu::RenderPass<'static>,
         _callback_resources: &egui_wgpu::CallbackResources,
     ) {
         let resources = self.visualizer.render_resources.lock().unwrap();
-        let plot_data = self.visualizer.get_plot_data();
+        let plot_data = self.visualizer.get_plot_data().expect_polar();
         if let Some(resources) = resources.as_ref() {
             let last_written = self.visualizer.last_written.load(Ordering::Relaxed);
             let written = self.visualizer.audio_service.get_samples_written();
             let queue = &resources.queue;
-            let buffer = &resources.vertex_buffer;
-            let uniform_buffer = &resources.uniform_buffer;
-            let bind_group = &resources.bind_group;
-            let pipeline = &resources.pipeline;
+            let buffer = &resources.line_vertex_buffer;
+            let uniform_buffer = &resources.line_uniform_buffer;
+            let bind_group = &resources.line_bind_group;
+            let pipeline = &resources.line_pipeline;
 
             let to_read = written
                 .saturating_sub(last_written)
@@ -214,7 +291,11 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             }
 
             // Convert to polar coordinates
-            let mut bin_data = [0.0; DIRECTION_BINS];
+            let mut bin_data = self.visualizer.bin_data.lock().unwrap();
+            if actual_read != 0 {
+                bin_data.fill(0.0);
+            }
+
             for i in 0..actual_read {
                 let mut m = l_samples[i];
                 let mut s = r_samples[i];
@@ -238,23 +319,26 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 bin_data[bin_index] += magnitude;
             }
 
-            // Maximum value one bin can have if ALL the samples are in that bin
-            // The value can technically be bigger, but we care more about the direction than the actual magnitude, so we scale it up a bit
-            // to have the magnitude be weasier to read.
-            let window_weight = actual_read as f32 * 0.3;
-            let window_weight_inverse = 1.0 / window_weight;
-            bin_data
-                .iter_mut()
-                .for_each(|x| *x = (*x * window_weight_inverse).clamp(0.0, 1.0));
+            if actual_read != 0 {
+                // Maximum value one bin can have if ALL the samples are in that bin
+                // The value can technically be bigger, but we care more about the direction than the actual magnitude, so we scale it up a bit
+                // to have the magnitude be weasier to read.
+                let window_weight = actual_read as f32 * 0.3;
+                let window_weight_inverse = 1.0 / window_weight;
+                bin_data
+                    .iter_mut()
+                    .for_each(|x| *x = (*x * window_weight_inverse).clamp(0.0, 1.0));
+            }
 
             let delta_t = self.visualizer.last_draw.lock().unwrap().elapsed();
             *self.visualizer.last_draw.lock().unwrap() = Instant::now();
 
             let mut smoother = self.visualizer.smoother.lock().unwrap();
             let smoother = smoother.as_mut().expect("Smoother should be initialized");
-            let smooth_data = smoother.smooth_data(delta_t.as_secs_f32(), &bin_data);
+            let smooth_data = smoother.smooth_data(delta_t.as_secs_f32(), &*bin_data);
 
-            // Draw the bins as a polar line plot.
+            // Compute endpoint verts
+            let gl_center = plot_data.gl_center_pos();
             let mut vertices = vec![[0.0, 0.0]; DIRECTION_BINS];
 
             for i in 0..DIRECTION_BINS {
@@ -263,24 +347,47 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 const MIN_DB: f32 = 70.0;
                 let magnitude =
                     scale_to_db(smooth_data[i]).clamp(-MIN_DB, 0.0).add(MIN_DB) / MIN_DB;
-                let x = magnitude * angle.cos();
-                let y = magnitude * angle.sin();
-                vertices[i] = [
-                    plot_data
-                        .x_axis
-                        .gl_pos(x),
-                    plot_data
-                        .y_axis
-                        .gl_pos(y),
-                ];
+                let Pos2 { x, y } = plot_data.gl_pos(angle, magnitude);
+                vertices[i] = [x, y];
             }
 
+            // Draw the fill as a triangle list.
+            let mut tri_vertices = vec![[0.0, 0.0]; (DIRECTION_BINS - 1) * 3];
+            for i in 0..(DIRECTION_BINS - 1) {
+                tri_vertices[i * 3] = [gl_center.x, gl_center.y];
+                tri_vertices[i * 3 + 1] = vertices[i];
+                tri_vertices[i * 3 + 2] = vertices[i + 1];
+            }
+
+            queue.write_buffer(
+                &resources.fill_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&tri_vertices),
+            );
+            queue.write_buffer(
+                &resources.fill_uniform_buffer,
+                0,
+                bytemuck::bytes_of(&FillUniforms {
+                    end_color: self.color_end.to_normalized_gamma_f32(),
+                    start_color: self.color_start.to_normalized_gamma_f32(),
+                    gradient_center: [gl_center.x, gl_center.y],
+                    gradient_radius: plot_data.gl_radius(plot_data.radius),
+                    _padding: 0.0,
+                }),
+            );
+
+            render_pass.set_bind_group(0, &resources.fill_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, resources.fill_vertex_buffer.slice(..));
+            render_pass.set_pipeline(&resources.fill_pipeline);
+            render_pass.draw(0..tri_vertices.len() as u32, 0..1);
+
+            // Draw the bins as a polar line plot.
             queue.write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
             queue.write_buffer(
                 uniform_buffer,
                 0,
                 bytemuck::bytes_of(&Uniforms {
-                    color: self.color.to_normalized_gamma_f32(),
+                    color: self.color_end.to_normalized_gamma_f32(),
                 }),
             );
 

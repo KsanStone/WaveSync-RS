@@ -1,5 +1,5 @@
 use crate::sound::audio_service::CHANNELS;
-use crate::ui::plot::{Plot, PlotData};
+use crate::ui::plot::{Plot, PlotData, PolarPlot};
 use crate::wavesync::WaveSyncVisuals;
 use egui;
 use egui::FontId;
@@ -91,12 +91,23 @@ impl<'a> VisualizerWidget<'a> {
 
 impl<'a> Widget for VisualizerWidget<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let mut plot_data = self.visualizer.get_plot_data();
-        let plot = Plot::new(&mut plot_data)
-            .set_grid_color(self.wavesync_visuals.plot_grid())
-            .set_label_color(ui.visuals().text_color())
-            .set_zero_line_color(self.wavesync_visuals.plot_grid_highlight());
-        let content_rect = plot.show(ui);
+        let plot_data = self.visualizer.get_plot_data();
+        let content_rect = match plot_data {
+            PlotData::XY(mut xy_data) => {
+                let plot = Plot::new(&mut xy_data)
+                    .set_grid_color(self.wavesync_visuals.plot_grid())
+                    .set_label_color(ui.visuals().text_color())
+                    .set_zero_line_color(self.wavesync_visuals.plot_grid_highlight());
+                plot.show(ui)
+            },
+            PlotData::Polar(mut radial_plot) => {
+                let plot = PolarPlot::new(&radial_plot)
+                    .set_grid_color(self.wavesync_visuals.plot_grid())
+                    .set_label_color(ui.visuals().text_color())
+                    .set_zero_line_color(self.wavesync_visuals.plot_grid_highlight());
+                plot.show(ui)
+            }
+        };
 
         if let Some(err_message) = self.visualizer.error_message() {
             ui.painter().text(
