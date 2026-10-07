@@ -11,6 +11,7 @@ pub struct Axis {
     pub max: f32,
     pub logarithmic: bool,
     pub always_show_zero: bool,
+    pub highlight_values: Vec<f32>,
 }
 
 pub struct AxisTicks {
@@ -25,6 +26,7 @@ impl Axis {
             max,
             logarithmic: false,
             always_show_zero: false,
+            highlight_values: Vec::new(),
         }
     }
 
@@ -34,7 +36,13 @@ impl Axis {
             max,
             logarithmic: true,
             always_show_zero: false,
+            highlight_values: Vec::new(),
         }
+    }
+
+    pub fn highlight(mut self, values: Vec<f32>) -> Self {
+        self.highlight_values = values;
+        self
     }
 
     pub fn always_show_zero(mut self, show: bool) -> Self {
@@ -250,6 +258,7 @@ pub(super) struct AxisPaintStyle {
     pub grid_color: Color32,
     pub zero_line_color: Color32,
     pub label_color: Color32,
+    pub highlight_color: Color32,
 }
 
 pub(super) fn paint_axis(
@@ -279,6 +288,7 @@ pub(super) fn paint_axis(
             Align2::RIGHT_CENTER,
         ),
     };
+
     let point = |value, offset| {
         rect.left_bottom() + along * axis.val_to_pos(value, 0.0, length) + outward * offset
     };
@@ -286,6 +296,11 @@ pub(super) fn paint_axis(
         painter.line_segment([point(value, start), point(value, end)], (1.0, color));
     };
     let ticks = axis.tick_positions(length);
+
+    // paint highlighted values first so that they do not occlude the axis labels
+    for &value in &axis.highlight_values {
+        paint_line(value, 0.0, TICK_SIZE * 2.0, style.highlight_color);
+    }
 
     if grid_shown {
         for &value in &ticks.major {
@@ -331,6 +346,7 @@ mod tests {
             grid_color: Color32::GRAY,
             zero_line_color: Color32::WHITE,
             label_color: Color32::LIGHT_GRAY,
+            highlight_color: Color32::YELLOW,
         };
         for (orientation, first_grid, first_tick, zero_line) in [
             (

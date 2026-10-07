@@ -8,7 +8,7 @@ use crate::{
     },
     ui::{
         VERTEX_2D_BUFFER_LAYOUT, create_pipeline,
-        plot::{PlotData, PolarPlotData},
+        plot::{Axis, PlotData, PolarPlotData},
         uniform_bindings,
         visualizer::visualizer_widget::Visualizer,
     },
@@ -45,6 +45,7 @@ pub struct Inner {
     last_draw: Mutex<Instant>,
     render_resources: Mutex<Option<RenderResources>>,
     smoother: Mutex<Option<Box<dyn FloatArraySmoother>>>,
+    lr_balance: Mutex<f32>,
 }
 
 struct RenderResources {
@@ -72,20 +73,29 @@ impl StereoImagerVisualizer {
             smoother: Mutex::new(Some(Box::new(smoother))),
             render_resources: Default::default(),
             bin_data: Mutex::new([0.0; DIRECTION_BINS]),
+            lr_balance: Mutex::new(0.0),
         }))
     }
 }
 
 impl Visualizer for StereoImagerVisualizer {
     fn get_plot_data(&self) -> PlotData {
+        let balance = self.0.lr_balance.lock().unwrap().clone().clamp(-1.0, 1.0);
         PlotData::Polar(
             PolarPlotData::new()
                 .with_radius(1.0)
-                .with_radial_lines(vec![0.0, FRAC_PI_2, FRAC_PI_4, FRAC_PI_2 + FRAC_PI_4, PI])
+                .with_radial_lines(
+                    vec![0.0, FRAC_PI_2, FRAC_PI_4, FRAC_PI_2 + FRAC_PI_4, PI],
+                    Some(vec!["", "C", "R", "L", ""]
+                        .into_iter()
+                        .map(|s| s.to_string())
+                        .collect()),
+                )
                 .with_viewport(Rect::from_min_max(
                     Pos2::new(-1.0, 0.0),
                     Pos2::new(1.0, 1.0),
-                )),
+                ))
+                .with_bottom_axis(Axis::linear(-1.0, 1.0).highlight(vec![balance])),
         )
     }
 
@@ -344,8 +354,19 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             let mut smoother = self.visualizer.smoother.lock().unwrap();
             let smoother = smoother.as_mut().expect("Smoother should be initialized");
             let smooth_data = smoother.smooth_data(delta_t.as_secs_f32(), &*bin_data);
-            // test alternaging pattern of 0.5 and 0.7 with DIRECTION_BINS emlements
-            // let smooth_data = [0.5, 0.7].iter().cycle().take(DIRECTION_BINS).cloned().collect::<Vec<f32>>();
+
+            // compute the left-right balance as a weighted average of the bin data, where the left bins are negative and the right bins are positive
+            // TODO proper calculation of the balance, this is just a rough estimate
+            let mut balance = 0.0;
+            for i in 0..DIRECTION_BINS {
+                let bin_value = smooth_data[i];
+                let bin_position =
+                    (i as f32 - DIRECTION_BINS as f32 / 2.0) / (DIRECTION_BINS as f32 / 2.0);
+                balance += bin_value * bin_position;
+            }
+
+            let mut lr_balance = self.visualizer.lr_balance.lock().unwrap();
+            *lr_balance = balance;
 
             // Compute boundry verts
             // The point is to have a pair of verticies for each bin,
@@ -356,7 +377,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             for i in 0..DIRECTION_BINS {
                 let angle_bin_start = (i as f32 / DIRECTION_BINS as f32) * PI;
                 let angle_bin_end = ((i + 1) as f32 / DIRECTION_BINS as f32) * PI;
-                
+
                 const MIN_DB: f32 = 70.0;
                 let magnitude =
                     scale_to_db(smooth_data[i]).clamp(-MIN_DB, 0.0).add(MIN_DB) / MIN_DB;

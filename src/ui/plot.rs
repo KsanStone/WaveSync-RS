@@ -54,6 +54,7 @@ impl Default for XYPlotData {
                 max: 100.0,
                 logarithmic: false,
                 always_show_zero: false,
+                highlight_values: Vec::new(),
             },
             x_axis_shown: true,
             y_axis: Axis {
@@ -61,6 +62,7 @@ impl Default for XYPlotData {
                 max: 100.0,
                 logarithmic: false,
                 always_show_zero: false,
+                highlight_values: Vec::new(),
             },
             y_axis_shown: true,
             x_axis_grid_lines_shown: true,
@@ -109,6 +111,7 @@ pub struct Plot<'a> {
     grid_color: Color32,
     label_color: Color32,
     zero_line_color: Color32,
+    highlight_color: Color32,
 }
 
 impl<'a> Plot<'a> {
@@ -118,6 +121,7 @@ impl<'a> Plot<'a> {
             grid_color: Color32::from_gray(50),
             label_color: Color32::from_gray(200),
             zero_line_color: Color32::from_gray(255),
+            highlight_color: Color32::from_rgb(255, 0, 0),
         }
     }
 
@@ -136,6 +140,11 @@ impl<'a> Plot<'a> {
         self
     }
 
+    pub fn set_highlight_color(mut self, color: Color32) -> Self {
+        self.highlight_color = color;
+        self
+    }
+
     pub fn show(self, ui: &mut Ui) -> Rect {
         let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
 
@@ -144,6 +153,7 @@ impl<'a> Plot<'a> {
             grid_color: self.grid_color,
             label_color: self.label_color,
             zero_line_color: self.zero_line_color,
+            highlight_color: self.highlight_color
         };
         let mut occupied_label_rects = Vec::new();
         let content_rect = rect.sub(Margin {

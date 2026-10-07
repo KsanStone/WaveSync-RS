@@ -1,5 +1,7 @@
-use egui::{Color32, Margin, Pos2, Rect, Sense, Ui};
+use egui::{Align2, Color32, FontId, Margin, Pos2, Rect, Sense, Ui, Vec2};
 use std::ops::Sub;
+
+use crate::ui::plot::{Axis, AxisPaintStyle, paint_axis};
 
 #[derive(Clone)]
 pub struct PolarPlotData {
@@ -9,12 +11,14 @@ pub struct PolarPlotData {
     pub radius: f32,
     pub radial_lines: PolarRadials,
     pub concentric_circles: PolarConcentricCircles,
+    pub bottom_axis: Option<Axis>,
 }
 
 #[derive(Clone)]
 pub struct PolarRadials {
     /// The angles (radians) of the radial lines to be drawn on the polar plot.
     pub line_angles: Vec<f32>,
+    pub override_labels: Option<Vec<String>>,
 }
 
 impl PolarConcentricCircles {
@@ -43,10 +47,17 @@ impl PolarPlotData {
             radius: 1.0,
             radial_lines: PolarRadials {
                 line_angles: vec![],
+                override_labels: None,
             },
+            bottom_axis: None,
             concentric_circles: PolarConcentricCircles::new(0.1),
             viewport: Rect::from_min_max(Pos2::new(-1.0, -1.0), Pos2::new(1.0, 1.0)),
         }
+    }
+
+    pub fn with_bottom_axis(mut self, axis: Axis) -> Self {
+        self.bottom_axis = Some(axis);
+        self
     }
 
     pub fn with_radius(mut self, radius: f32) -> Self {
@@ -59,8 +70,9 @@ impl PolarPlotData {
         self
     }
 
-    pub fn with_radial_lines(mut self, angles: Vec<f32>) -> Self {
+    pub fn with_radial_lines(mut self, angles: Vec<f32>, override_labels: Option<Vec<String>>) -> Self {
         self.radial_lines.line_angles = angles;
+        self.radial_lines.override_labels = override_labels;
         self
     }
 
@@ -79,8 +91,10 @@ impl PolarPlotData {
     }
 
     pub fn gl_center_pos(&self) -> Pos2 {
-        let gl_x = (self.center_offset.x - self.viewport.left()) / self.viewport.width() * 2.0 - 1.0;
-        let gl_y = (self.center_offset.y - self.viewport.top()) / self.viewport.height() * 2.0 - 1.0;
+        let gl_x =
+            (self.center_offset.x - self.viewport.left()) / self.viewport.width() * 2.0 - 1.0;
+        let gl_y =
+            (self.center_offset.y - self.viewport.top()) / self.viewport.height() * 2.0 - 1.0;
         Pos2::new(gl_x, gl_y)
     }
 
@@ -94,12 +108,14 @@ impl PolarPlotData {
         Pos2::new(gl_x, gl_y)
     }
 
-
     /// Compute the center position of the plot in the egui Ui coordinate space.
     pub fn center_pos_in_ui(&self, ui_rect: Rect) -> Pos2 {
         Pos2::new(
-            (self.center_offset.x - self.viewport.left()) / self.viewport.width() * ui_rect.width() + ui_rect.min.x,
-            (self.center_offset.y + self.viewport.bottom()) / self.viewport.height() * ui_rect.height() + ui_rect.min.y,
+            (self.center_offset.x - self.viewport.left()) / self.viewport.width() * ui_rect.width()
+                + ui_rect.min.x,
+            (self.center_offset.y + self.viewport.bottom()) / self.viewport.height()
+                * ui_rect.height()
+                + ui_rect.min.y,
         )
     }
 
@@ -115,6 +131,7 @@ pub struct PolarPlot<'a> {
     grid_color: Color32,
     label_color: Color32,
     zero_line_color: Color32,
+    hightlight_color: Color32,
 }
 
 impl<'a> PolarPlot<'a> {
@@ -124,6 +141,7 @@ impl<'a> PolarPlot<'a> {
             grid_color: Color32::from_gray(50),
             label_color: Color32::from_gray(200),
             zero_line_color: Color32::from_gray(255),
+            hightlight_color: Color32::from_gray(100),
         }
     }
 
@@ -142,12 +160,53 @@ impl<'a> PolarPlot<'a> {
         self
     }
 
+    pub fn set_highlight_color(mut self, color: Color32) -> Self {
+        self.hightlight_color = color;
+        self
+    }
+
     pub fn show(self, ui: &mut Ui) -> Rect {
         let (rect, _) = ui.allocate_exact_size(ui.available_size_before_wrap(), Sense::empty());
 
-        let plot_paint_rect = rect.sub(Margin::same(1)); // we need to leave some space for the stroke of the ellipse.
+        let label_text = if let Some(labels) = &self.plot_data.radial_lines.override_labels {
+            labels.clone()
+        } else {
+            self.plot_data
+                .radial_lines
+                .line_angles
+                .iter()
+                .map(|&angle| format_angle_label(angle))
+                .collect()
+        };
 
-        let painter = ui.painter().with_clip_rect(rect);
+        let labels: Vec<_> = label_text
+            .iter()
+            .map(|text| {
+                ui.painter().layout_no_wrap(
+                    text.clone(),
+                    FontId::monospace(9.0),
+                    self.label_color,
+                )
+            })
+            .collect();
+        // Leave room for labels outside the rim, including at the cardinal angles.
+        let label_size = labels
+            .iter()
+            .fold(Vec2::ZERO, |size, label| size.max(label.size()));
+        let horizontal_margin = (label_size.x + LABEL_OFFSET).max(5.0);
+        let vertical_margin = (label_size.y + LABEL_OFFSET).max(5.0);
+        let bottom_margin = if self.plot_data.bottom_axis.is_some() {
+            vertical_margin.max(super::X_AXIS_WIDTH as f32)
+        } else {
+            vertical_margin
+        };
+        let plot_clip_rect = Rect::from_min_max(
+            rect.min + Vec2::new(horizontal_margin, vertical_margin),
+            rect.max - Vec2::new(horizontal_margin, bottom_margin),
+        );
+        let plot_paint_rect = plot_clip_rect.sub(Margin::same(1)); // we need to leave some space for the stroke of the ellipse.
+
+        let painter = ui.painter().with_clip_rect(plot_clip_rect);
         // we need to clip the painter so that the ellipse does not go outside the plot area.
 
         let center = self.plot_data.center_pos_in_ui(plot_paint_rect);
@@ -158,7 +217,9 @@ impl<'a> PolarPlot<'a> {
         self.stroke_ellipse(&painter, center, outer_rim_size, self.zero_line_color);
 
         // draw concentric circles
-        let num_circles = (self.plot_data.radius / self.plot_data.concentric_circles.preffered_spacing).floor() as usize;
+        let num_circles = (self.plot_data.radius
+            / self.plot_data.concentric_circles.preffered_spacing)
+            .floor() as usize;
         let cicrle_radii: Vec<f32> = (1..=num_circles)
             .map(|i| i as f32 * self.plot_data.concentric_circles.preffered_spacing)
             .collect();
@@ -167,20 +228,41 @@ impl<'a> PolarPlot<'a> {
             self.stroke_ellipse(&painter, center, size, self.grid_color);
         }
 
+        // draw the radial lines and labels
+        for (&angle, label) in self.plot_data.radial_lines.line_angles.iter().zip(labels) {
+            // Screen coordinates grow downward, so flip the angle vertically.
+            let radial = Vec2::new(
+                outer_rim_size.0 * angle.cos(),
+                -outer_rim_size.1 * angle.sin(),
+            );
+            let end = center + radial;
+            painter.line_segment([center, end], (1.0, self.zero_line_color));
 
-        // draw the radial lines
-        for angle in &self.plot_data.radial_lines.line_angles {
-            // flip the angle across the x-axis to have angles behave as the user would expect.
-            let angle = -angle;
-            let end_x = center.x + outer_rim_size.0 * angle.cos();
-            let end_y = center.y + outer_rim_size.1 * angle.sin();
-            painter.line_segment(
-                [center, Pos2::new(end_x, end_y)],
-                (1.0, self.zero_line_color),
+            let position = end + radial.normalized() * LABEL_OFFSET;
+            let anchor = radial_label_anchor(radial);
+            let label_rect = anchor.anchor_size(position, label.size());
+            ui.painter().galley(label_rect.min, label, self.label_color);
+        }
+
+        if let Some(axis) = &self.plot_data.bottom_axis {
+            let style = AxisPaintStyle {
+                grid_color: self.grid_color,
+                label_color: self.label_color,
+                zero_line_color: self.zero_line_color,
+                highlight_color: self.hightlight_color,
+            };
+            paint_axis(
+                &ui.painter(), // this painter cannot be clipped
+                axis,
+                plot_clip_rect,
+                super::AxisOrientation::Horizontal,
+                false,
+                &style,
+                &mut vec![],
             );
         }
 
-        rect
+        plot_paint_rect
     }
 
     fn stroke_ellipse(
@@ -201,4 +283,27 @@ impl<'a> PolarPlot<'a> {
         }
         painter.add(egui::Shape::closed_line(points, (1.0, color)));
     }
+}
+
+const LABEL_OFFSET: f32 = 3.0;
+
+fn radial_label_anchor(radial: Vec2) -> Align2 {
+    // Pick the inward-facing corner or edge center in each 45-degree sector.
+    // Use the displayed radial direction so this also works for ellipses.
+    let sector = (radial.angle() / std::f32::consts::FRAC_PI_4).round() as i32;
+    match sector.rem_euclid(8) {
+        0 => Align2::LEFT_CENTER,
+        1 => Align2::LEFT_TOP,
+        2 => Align2::CENTER_TOP,
+        3 => Align2::RIGHT_TOP,
+        4 => Align2::RIGHT_CENTER,
+        5 => Align2::RIGHT_BOTTOM,
+        6 => Align2::CENTER_BOTTOM,
+        7 => Align2::LEFT_BOTTOM,
+        _ => unreachable!(),
+    }
+}
+
+fn format_angle_label(angle: f32) -> String {
+    format!("{:.1}°", angle.to_degrees())
 }
