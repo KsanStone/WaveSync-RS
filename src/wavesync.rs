@@ -104,7 +104,7 @@ impl WaveSyncVisuals {
     }
 
     pub fn color_start(&self) -> Color32 {
-        self.background_color(self.theme.base, 50)
+        self.background_color(self.theme.blue, 25)
     }
 
     pub fn color_end(&self) -> Color32 {

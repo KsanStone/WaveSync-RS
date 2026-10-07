@@ -32,12 +32,13 @@ use std::{ops::Add, sync::atomic::Ordering};
 
 deref_arc!(StereoImagerVisualizer);
 
-const DIRECTION_BINS: usize = 33;
+const DIRECTION_BINS: usize = 65;
 const MAX_SAMPLES_TO_READ_PER_FRAME: usize = 8192;
 
 pub struct Inner {
     audio_service: AudioService,
     settings_open: AtomicBool,
+    #[allow(dead_code)]
     data: Arc<RwLock<WaveSyncAppData>>,
     bin_data: Mutex<[f32; DIRECTION_BINS]>,
     last_written: AtomicU64,
@@ -311,6 +312,13 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
 
                 // Compute bin index, -pi/2 <= angle <= pi/2, so we need to map it to 0..DIRECTION_BINS
                 // and handle fp32 shenanigans by clamping the value to 0..DIRECTION_BINS-1
+                // assuming 3 bins,
+                // angle = -pi/2 -> bin_index = 0
+                // boundry = -pi/6
+                // angle = 0 -> bin_index = 1
+                // boundry = pi/6
+                // angle = pi/2 -> bin_index = 2
+
                 let bin_index = ((angle + std::f32::consts::FRAC_PI_2) / std::f32::consts::PI
                     * DIRECTION_BINS as f32)
                     .floor() as usize;
@@ -336,27 +344,36 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             let mut smoother = self.visualizer.smoother.lock().unwrap();
             let smoother = smoother.as_mut().expect("Smoother should be initialized");
             let smooth_data = smoother.smooth_data(delta_t.as_secs_f32(), &*bin_data);
+            // test alternaging pattern of 0.5 and 0.7 with DIRECTION_BINS emlements
+            // let smooth_data = [0.5, 0.7].iter().cycle().take(DIRECTION_BINS).cloned().collect::<Vec<f32>>();
 
-            // Compute endpoint verts
+            // Compute boundry verts
+            // The point is to have a pair of verticies for each bin,
+            // aligned exactly as described above in the binning process.
             let gl_center = plot_data.gl_center_pos();
-            let mut vertices = vec![[0.0, 0.0]; DIRECTION_BINS];
+            let mut vertices = vec![[0.0, 0.0]; DIRECTION_BINS * 2];
 
             for i in 0..DIRECTION_BINS {
-                let angle = (i as f32 / DIRECTION_BINS as f32) * std::f32::consts::PI
-                    - std::f32::consts::PI * 2.0;
+                let angle_bin_start = (i as f32 / DIRECTION_BINS as f32) * PI;
+                let angle_bin_end = ((i + 1) as f32 / DIRECTION_BINS as f32) * PI;
+                
                 const MIN_DB: f32 = 70.0;
                 let magnitude =
                     scale_to_db(smooth_data[i]).clamp(-MIN_DB, 0.0).add(MIN_DB) / MIN_DB;
-                let Pos2 { x, y } = plot_data.gl_pos(angle, magnitude);
-                vertices[i] = [x, y];
+
+                let pos_start = plot_data.gl_pos(angle_bin_start, magnitude);
+                let pos_end = plot_data.gl_pos(angle_bin_end, magnitude);
+
+                vertices[i * 2] = [pos_start.x, pos_start.y];
+                vertices[i * 2 + 1] = [pos_end.x, pos_end.y];
             }
 
             // Draw the fill as a triangle list.
-            let mut tri_vertices = vec![[0.0, 0.0]; (DIRECTION_BINS - 1) * 3];
-            for i in 0..(DIRECTION_BINS - 1) {
+            let mut tri_vertices = vec![[0.0, 0.0]; DIRECTION_BINS * 3];
+            for i in 0..DIRECTION_BINS {
                 tri_vertices[i * 3] = [gl_center.x, gl_center.y];
-                tri_vertices[i * 3 + 1] = vertices[i];
-                tri_vertices[i * 3 + 2] = vertices[i + 1];
+                tri_vertices[i * 3 + 1] = vertices[2 * i];
+                tri_vertices[i * 3 + 2] = vertices[2 * i + 1];
             }
 
             queue.write_buffer(
@@ -394,7 +411,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             render_pass.set_bind_group(0, bind_group, &[]);
             render_pass.set_vertex_buffer(0, buffer.slice(..));
             render_pass.set_pipeline(pipeline);
-            render_pass.draw(0..DIRECTION_BINS as u32, 0..1);
+            render_pass.draw(0..DIRECTION_BINS as u32 * 2, 0..1);
         }
     }
 }
