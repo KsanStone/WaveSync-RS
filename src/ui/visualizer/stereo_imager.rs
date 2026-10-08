@@ -20,6 +20,7 @@ use egui_wgpu::{
     CallbackTrait,
     wgpu::{self, BufferAddress, util::DeviceExt},
 };
+use serde::{Deserialize, Serialize};
 use std::{
     f32::consts::{FRAC_PI_2, FRAC_PI_4, PI, SQRT_2},
     sync::{
@@ -46,6 +47,19 @@ pub struct Inner {
     render_resources: Mutex<Option<RenderResources>>,
     smoother: Mutex<Option<Box<dyn FloatArraySmoother>>>,
     lr_balance: Mutex<f32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StereoImagerVisualizerSettings {
+    smoothing_factor: f32,
+}
+
+impl Default for StereoImagerVisualizerSettings {
+    fn default() -> Self {
+        Self {
+            smoothing_factor: 0.95,
+        }
+    }
 }
 
 struct RenderResources {
@@ -80,7 +94,7 @@ impl StereoImagerVisualizer {
 
 impl Visualizer for StereoImagerVisualizer {
     fn get_plot_data(&self) -> PlotData {
-        let balance = self.0.lr_balance.lock().unwrap().clone().clamp(-1.0, 1.0);
+        let balance = self.0.lr_balance.lock().unwrap().clamp(-1.0, 1.0);
         PlotData::Polar(
             PolarPlotData::new()
                 .with_radius(1.0)
@@ -118,7 +132,14 @@ impl Visualizer for StereoImagerVisualizer {
         ))
     }
 
-    impl_settings!("StereoImager Settings", ui, this, {});
+    impl_settings!("StereoImager Settings", ui, this, {
+        let settings = &mut this.data.write().unwrap().stereo_imager_settings;
+
+        ui.horizontal(|ui| {
+            ui.label("Smoothing factor: ");
+            ui.add(egui::Slider::new(&mut settings.smoothing_factor, 0.0..=1.0).text("Smoothing"));
+        });
+    });
 }
 
 struct StereoImagerVisualizerCallback {
@@ -353,13 +374,13 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
 
             let mut smoother = self.visualizer.smoother.lock().unwrap();
             let smoother = smoother.as_mut().expect("Smoother should be initialized");
+            smoother.set_factor(self.visualizer.data.read().unwrap().stereo_imager_settings.smoothing_factor);
             let smooth_data = smoother.smooth_data(delta_t.as_secs_f32(), &*bin_data);
 
             // compute the left-right balance as a weighted average of the bin data, where the left bins are negative and the right bins are positive
             // TODO proper calculation of the balance, this is just a rough estimate
             let mut balance = 0.0;
-            for i in 0..DIRECTION_BINS {
-                let bin_value = smooth_data[i];
+            for (i, bin_value) in smooth_data.iter().enumerate().take(DIRECTION_BINS) {
                 let bin_position =
                     (i as f32 - DIRECTION_BINS as f32 / 2.0) / (DIRECTION_BINS as f32 / 2.0);
                 balance += bin_value * bin_position;

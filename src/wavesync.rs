@@ -13,7 +13,7 @@ use crate::ui::visualizer::extended_waveform::{
 };
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
-use crate::ui::visualizer::stereo_imager::StereoImagerVisualizer;
+use crate::ui::visualizer::stereo_imager::{StereoImagerVisualizer, StereoImagerVisualizerSettings};
 use crate::ui::visualizer::vectorscope::{VectorscopeSettings, VectorscopeVisualizer};
 use crate::ui::visualizer::visualizer_widget::{RenderArgs, Visualizer, VisualizerWidget};
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
@@ -56,6 +56,7 @@ pub struct WaveSyncAppData {
     pub extended_waveform_settings: ExtendedWaveformVisualizerSettings,
     pub spectrogram_settings: SpectrogramSettings,
     pub vectorscope_settings: VectorscopeSettings,
+    pub stereo_imager_settings: StereoImagerVisualizerSettings,
     pub fft_rate: u32,
     pub fft_size: usize,
     pub theme_name: String,

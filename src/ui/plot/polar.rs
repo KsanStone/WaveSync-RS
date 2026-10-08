@@ -252,7 +252,7 @@ impl<'a> PolarPlot<'a> {
                 highlight_color: self.hightlight_color,
             };
             paint_axis(
-                &ui.painter(), // this painter cannot be clipped
+                ui.painter(), // this painter cannot be clipped
                 axis,
                 plot_clip_rect,
                 super::AxisOrientation::Horizontal,
