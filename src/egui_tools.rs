@@ -77,21 +77,29 @@ impl EguiRenderer {
 
         self.ppp(screen_descriptor.pixels_per_point);
 
-        let full_output = self.state.egui_ctx().end_pass();
-
-        self.state
-            .handle_platform_output(window, full_output.platform_output);
-
-        let tris = self
-            .state
-            .egui_ctx()
-            .tessellate(full_output.shapes, self.state.egui_ctx().pixels_per_point());
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.renderer
-                .update_texture(device, queue, *id, image_delta);
+        let full_output = {
+            profiling::scope!("egui.end_pass");
+            self.state.egui_ctx().end_pass()
+        };
+        {
+            profiling::scope!("egui.platform_output");
+            self.state.handle_platform_output(window, full_output.platform_output);
         }
-        self.renderer
-            .update_buffers(device, queue, encoder, &tris, screen_descriptor);
+        let tris = {
+            profiling::scope!("egui.tessellate");
+            self.state.egui_ctx().tessellate(full_output.shapes, self.state.egui_ctx().pixels_per_point())
+        };
+        {
+            profiling::scope!("egui.texture_uploads");
+            for (id, image_delta) in &full_output.textures_delta.set {
+                self.renderer.update_texture(device, queue, *id, image_delta);
+            }
+        }
+        {
+            profiling::scope!("egui.update_buffers_and_prepare_callbacks");
+            self.renderer.update_buffers(device, queue, encoder, &tris, screen_descriptor);
+        }
+        profiling::scope!("egui.render_and_paint_callbacks");
         let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: window_surface_view,

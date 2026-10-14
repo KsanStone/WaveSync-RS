@@ -35,6 +35,7 @@ pub struct Inner {
     last_written: AtomicU64,
     last_draw: Mutex<Instant>,
     render_resources: Mutex<Option<RenderResources>>,
+    uniform_uploads: Mutex<crate::ui::uniform_upload::UniformUploads>,
 }
 
 impl VectorscopeVisualizer {
@@ -46,6 +47,7 @@ impl VectorscopeVisualizer {
             last_written: Default::default(),
             last_draw: Mutex::new(Instant::now()),
             render_resources: Default::default(),
+            uniform_uploads: Default::default(),
         }))
     }
 }
@@ -149,6 +151,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         _egui_encoder: &mut CommandEncoder,
         _resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
+        profiling::scope!("vectorscope.prepare");
         let mut re_size = false;
         let width = self.rect.width() as u32;
         let height = self.rect.height() as u32;
@@ -333,6 +336,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                 cache: None,
             });
 
+            *self.visualizer.uniform_uploads.lock().unwrap() = Default::default();
             *resources = Some(RenderResources {
                 line_pipeline: create_pipeline_color(
                     device,
@@ -392,6 +396,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         _render_pass: &mut RenderPass<'static>,
         _callback_resources: &CallbackResources,
     ) {
+        profiling::scope!("vectorscope.paint");
         // Noop, we'll do the actual rendering in the post egui render pass,
         // as we require additional render-passes to do the render.
     }
@@ -399,6 +404,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
 
 impl PostEquiRender for VectorscopeVisualizerCallback {
     fn post_egui_render(&self, args: &mut RenderArgs) {
+        profiling::scope!("vectorscope.post_egui_render");
         let resources = self.visualizer.render_resources.lock().unwrap();
         let plot_data = self.visualizer.get_plot_data().expect_xy();
         if let Some(resources) = resources.as_ref() {
@@ -414,18 +420,22 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
             let lambda = -decay.ln() * 60.0;
             let decay_factor = (-lambda * delta_t).exp();
 
-            queue.write_buffer(
+            let uniform_uploads = self.visualizer.uniform_uploads.lock().unwrap();
+            crate::upload_uniform_if_changed!(
+                *uniform_uploads,
+                "vectorscope.uniform_buffer",
+                queue,
                 &resources.uniform_buffer,
-                0,
                 bytemuck::bytes_of(&Uniforms {
                     fill_color: self.color.to_normalized_gamma_f32(),
                     decay_factor,
                     write_factor: 1.0,
                     _padding: 0,
-                }),
+                })
             );
 
             {
+                profiling::scope!("vectorscope.decay_encode");
                 // Decay :O
                 let mut pass = args
                     .encoder
@@ -441,6 +451,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
             }
 
             {
+                profiling::scope!("vectorscope.build_upload_and_draw_lines");
                 // Draw new lines
                 let mut pass = args.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("R32Float Pass"),
@@ -493,15 +504,23 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                         lengths.push(1.0f32 / dist); //vert 2
                     }
 
-                    queue.write_buffer(
-                        &resources.vertex_buffer,
-                        0,
-                        bytemuck::cast_slice(&vertex_data),
+                    crate::profile_upload!(
+                        "upload.geometry",
+                        "vectorscope.vertex_buffer",
+                        queue.write_buffer(
+                            &resources.vertex_buffer,
+                            0,
+                            bytemuck::cast_slice(&vertex_data),
+                        )
                     );
-                    queue.write_buffer(
-                        &resources.vertex_instance_buffer,
-                        0,
-                        bytemuck::cast_slice(&lengths),
+                    crate::profile_upload!(
+                        "upload.geometry",
+                        "vectorscope.vertex_instance_buffer",
+                        queue.write_buffer(
+                            &resources.vertex_instance_buffer,
+                            0,
+                            bytemuck::cast_slice(&lengths),
+                        )
                     );
 
                     pass.set_pipeline(&resources.line_pipeline);
@@ -513,6 +532,7 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
             }
 
             {
+                profiling::scope!("vectorscope.composite_encode");
                 // Display the luminosity buffer
                 let mut pass = args.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {

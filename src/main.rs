@@ -5,11 +5,13 @@ use crate::persistance::APP_KEY;
 use crate::wavesync::{WaveSync, WaveSyncAppData};
 use egui::IconData;
 use std::env;
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::EventLoop;
 
 pub mod app;
+mod cpu_profiler;
 pub mod egui_tools;
 pub mod media;
+mod performance;
 mod persistance;
 pub mod sound;
 pub mod themes;
@@ -28,6 +30,7 @@ async fn run() {
         unsafe { env::set_var("RUST_LOG", "info,wgpu_hal=off") }
     }
     env_logger::init();
+    let _cpu_profiler = cpu_profiler::start();
     let icon_bytes = include_bytes!("../icon.png");
     let image = image::load_from_memory(icon_bytes)
         .expect("Failed to load icon")
@@ -41,8 +44,6 @@ async fn run() {
         rgba,
     };
     let event_loop = EventLoop::new().unwrap();
-
-    event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = App::new("WaveSync", icon_data, |persistence| {
         let data: WaveSyncAppData = persistence.get(APP_KEY).unwrap_or_default();

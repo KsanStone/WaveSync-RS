@@ -45,8 +45,18 @@ pub struct Inner {
     last_written: AtomicU64,
     last_draw: Mutex<Instant>,
     render_resources: Mutex<Option<RenderResources>>,
+    scratch: Mutex<StereoScratch>,
     smoother: Mutex<Option<Box<dyn FloatArraySmoother>>>,
     lr_balance: Mutex<f32>,
+}
+
+#[derive(Default)]
+struct StereoScratch {
+    uniform_uploads: crate::ui::uniform_upload::UniformUploads,
+    left: Vec<f32>,
+    right: Vec<f32>,
+    vertices: Vec<[f32; 2]>,
+    fill_vertices: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,6 +96,7 @@ impl StereoImagerVisualizer {
             last_draw: Mutex::new(Instant::now()),
             smoother: Mutex::new(Some(Box::new(smoother))),
             render_resources: Default::default(),
+            scratch: Default::default(),
             bin_data: Mutex::new([0.0; DIRECTION_BINS]),
             lr_balance: Mutex::new(0.0),
         }))
@@ -100,10 +111,12 @@ impl Visualizer for StereoImagerVisualizer {
                 .with_radius(1.0)
                 .with_radial_lines(
                     vec![0.0, FRAC_PI_2, FRAC_PI_4, FRAC_PI_2 + FRAC_PI_4, PI],
-                    Some(vec!["", "C", "R", "L", ""]
-                        .into_iter()
-                        .map(|s| s.to_string())
-                        .collect()),
+                    Some(
+                        vec!["", "C", "R", "L", ""]
+                            .into_iter()
+                            .map(|s| s.to_string())
+                            .collect(),
+                    ),
                 )
                 .with_viewport(Rect::from_min_max(
                     Pos2::new(-1.0, 0.0),
@@ -173,6 +186,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
         _egui_encoder: &mut egui_wgpu::wgpu::CommandEncoder,
         _callback_resources: &mut egui_wgpu::CallbackResources,
     ) -> Vec<egui_wgpu::wgpu::CommandBuffer> {
+        profiling::scope!("stereo_imager.prepare");
         let mut resources = self.visualizer.render_resources.lock().unwrap();
 
         if resources.is_none() {
@@ -246,6 +260,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                     push_constant_ranges: &[],
                 });
 
+            self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 queue: queue.clone(),
                 line_vertex_buffer: vertex_buffer,
@@ -282,6 +297,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
         render_pass: &mut egui_wgpu::wgpu::RenderPass<'static>,
         _callback_resources: &egui_wgpu::CallbackResources,
     ) {
+        profiling::scope!("stereo_imager.paint");
         let resources = self.visualizer.render_resources.lock().unwrap();
         let plot_data = self.visualizer.get_plot_data().expect_polar();
         if let Some(resources) = resources.as_ref() {
@@ -304,14 +320,28 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 return;
             }
 
-            let mut l_samples = self
-                .visualizer
-                .audio_service
-                .get_samples(AudioChannel::Left, to_read as usize);
-            let mut r_samples = self
-                .visualizer
-                .audio_service
-                .get_samples(AudioChannel::Right, to_read as usize);
+            let mut scratch = self.visualizer.scratch.lock().unwrap();
+            let StereoScratch {
+                uniform_uploads,
+                left: l_samples,
+                right: r_samples,
+                vertices,
+                fill_vertices: tri_vertices,
+            } = &mut *scratch;
+            self.visualizer.audio_service.get_samples_aligned_into(
+                AudioChannel::Left,
+                to_read as usize,
+                0,
+                to_read as usize,
+                l_samples,
+            );
+            self.visualizer.audio_service.get_samples_aligned_into(
+                AudioChannel::Right,
+                to_read as usize,
+                0,
+                to_read as usize,
+                r_samples,
+            );
             let actual_read = l_samples.len().min(r_samples.len());
 
             // Rotate the samples by 45deg
@@ -374,7 +404,14 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
 
             let mut smoother = self.visualizer.smoother.lock().unwrap();
             let smoother = smoother.as_mut().expect("Smoother should be initialized");
-            smoother.set_factor(self.visualizer.data.read().unwrap().stereo_imager_settings.smoothing_factor);
+            smoother.set_factor(
+                self.visualizer
+                    .data
+                    .read()
+                    .unwrap()
+                    .stereo_imager_settings
+                    .smoothing_factor,
+            );
             let smooth_data = smoother.smooth_data(delta_t.as_secs_f32(), &*bin_data);
 
             // compute the left-right balance as a weighted average of the bin data, where the left bins are negative and the right bins are positive
@@ -393,7 +430,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             // The point is to have a pair of verticies for each bin,
             // aligned exactly as described above in the binning process.
             let gl_center = plot_data.gl_center_pos();
-            let mut vertices = vec![[0.0, 0.0]; DIRECTION_BINS * 2];
+            crate::resize_scratch!(*vertices, DIRECTION_BINS * 2, [0.0, 0.0]);
 
             for i in 0..DIRECTION_BINS {
                 let angle_bin_start = (i as f32 / DIRECTION_BINS as f32) * PI;
@@ -411,28 +448,34 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             }
 
             // Draw the fill as a triangle list.
-            let mut tri_vertices = vec![[0.0, 0.0]; DIRECTION_BINS * 3];
+            crate::resize_scratch!(*tri_vertices, DIRECTION_BINS * 3, [0.0, 0.0]);
             for i in 0..DIRECTION_BINS {
                 tri_vertices[i * 3] = [gl_center.x, gl_center.y];
                 tri_vertices[i * 3 + 1] = vertices[2 * i];
                 tri_vertices[i * 3 + 2] = vertices[2 * i + 1];
             }
 
-            queue.write_buffer(
-                &resources.fill_vertex_buffer,
-                0,
-                bytemuck::cast_slice(&tri_vertices),
+            crate::profile_upload!(
+                "upload.geometry",
+                "stereo_imager.fill_vertex_buffer",
+                queue.write_buffer(
+                    &resources.fill_vertex_buffer,
+                    0,
+                    bytemuck::cast_slice(tri_vertices),
+                )
             );
-            queue.write_buffer(
+            crate::upload_uniform_if_changed!(
+                *uniform_uploads,
+                "stereo_imager.fill_uniform_buffer",
+                queue,
                 &resources.fill_uniform_buffer,
-                0,
                 bytemuck::bytes_of(&FillUniforms {
                     end_color: self.color_end.to_normalized_gamma_f32(),
                     start_color: self.color_start.to_normalized_gamma_f32(),
                     gradient_center: [gl_center.x, gl_center.y],
                     gradient_radius: plot_data.gl_radius(plot_data.radius),
                     _padding: 0.0,
-                }),
+                })
             );
 
             render_pass.set_bind_group(0, &resources.fill_bind_group, &[]);
@@ -441,13 +484,19 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             render_pass.draw(0..tri_vertices.len() as u32, 0..1);
 
             // Draw the bins as a polar line plot.
-            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
-            queue.write_buffer(
+            crate::profile_upload!(
+                "upload.geometry",
+                "stereo_imager.line_vertices",
+                queue.write_buffer(buffer, 0, bytemuck::cast_slice(vertices))
+            );
+            crate::upload_uniform_if_changed!(
+                *uniform_uploads,
+                "stereo_imager.uniform_buffer",
+                queue,
                 uniform_buffer,
-                0,
                 bytemuck::bytes_of(&Uniforms {
                     color: self.color_end.to_normalized_gamma_f32(),
-                }),
+                })
             );
 
             render_pass.set_bind_group(0, bind_group, &[]);

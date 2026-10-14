@@ -6,7 +6,7 @@ use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
-    QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, catmull_rom_spline, create_pipeline,
+    QUAD_VERTICES, VERTEX_2D_BUFFER_LAYOUT, catmull_rom_spline_into, create_pipeline,
     freq_spectrum_select, log_axis_sel,
 };
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
@@ -37,6 +37,29 @@ pub struct Inner {
     last_draw: Mutex<Instant>,
     channel: AudioChannel,
     render_resources: Mutex<Option<RenderResources>>,
+    scratch: Mutex<SpectrumScratch>,
+}
+
+#[derive(PartialEq, Eq)]
+struct SpectrumPositionKey {
+    sample_rate: u32,
+    fft_size: usize,
+    skip: usize,
+    axis: crate::ui::vec_cache::AxisMappingKey,
+    viewport_min_bits: u32,
+    viewport_max_bits: u32,
+}
+
+#[derive(Default)]
+struct SpectrumScratch {
+    uniform_uploads: crate::ui::uniform_upload::UniformUploads,
+    bin_positions: crate::ui::vec_cache::CachedVec<SpectrumPositionKey, [f32; 2]>,
+    fft: Vec<f32>,
+    positions: Vec<[f32; 2]>,
+    vertices: Vec<[f32; 2]>,
+    instances: Vec<BarInstanceData>,
+    spline_padding: Vec<[f32; 2]>,
+    spline_output: Vec<[f32; 2]>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -91,6 +114,7 @@ impl SpectrumVisualizer {
             settings_open: Default::default(),
             last_draw: Mutex::new(Instant::now()),
             render_resources: Default::default(),
+            scratch: Default::default(),
         }))
     }
 }
@@ -230,6 +254,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         _egui_encoder: &mut CommandEncoder,
         _resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
+        profiling::scope!("spectrum.prepare");
         let mut resources = self.visualizer.render_resources.lock().unwrap();
 
         if resources.is_none() {
@@ -290,6 +315,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 push_constant_ranges: &[],
             });
 
+            self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 bars_pipeline: create_pipeline(
                     device,
@@ -365,6 +391,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
         render_pass: &mut RenderPass<'static>,
         _callback_resources: &CallbackResources,
     ) {
+        profiling::scope!("spectrum.paint");
         let resources = self.visualizer.render_resources.lock().unwrap();
         let plot_data = self.visualizer.get_plot_data().expect_xy();
         let smoother_factor = {
@@ -412,7 +439,20 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             let current_source = self.visualizer.audio_service.get_source();
             let settings = &self.visualizer.data.read().unwrap().spectrum_settings;
 
-            let fft_target = self.visualizer.audio_service.get_fft(channel);
+            let mut scratch = self.visualizer.scratch.lock().unwrap();
+            let SpectrumScratch {
+                uniform_uploads,
+                bin_positions,
+                fft: fft_target,
+                positions: position_data,
+                vertices: vertex_array,
+                instances: instance_data,
+                spline_padding,
+                spline_output,
+            } = &mut *scratch;
+            self.visualizer
+                .audio_service
+                .get_fft_into(channel, fft_target);
             let mut fft_data = fft_target.as_slice();
 
             if let Some(smoother) = smoother.as_mut() {
@@ -427,19 +467,35 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             let displayed_bins = current_source
                 .bin_of_frequency(plot_data.x_axis.max, fft_size)
                 .min(fft_output_size);
-            let bars_to_draw = displayed_bins - skip;
-            let mut position_data = Vec::with_capacity(bars_to_draw);
-            let mut position_array = vec![[0.0, 0.0]; bars_to_draw + 1 + skip];
-
-            for (i, item) in position_array.iter_mut().enumerate().skip(skip) {
-                let bin_freq = frequency_of_bin(i, current_source.sample_rate as usize, fft_size);
-                *item = [
-                    plot_data.x_axis.gl_pos(bin_freq),
-                    plot_data
-                        .x_axis
-                        .val_to_pos(bin_freq, info.viewport.min.x, info.viewport.max.x),
-                ];
+            let bars_to_draw = displayed_bins.saturating_sub(skip);
+            position_data.clear();
+            let key = SpectrumPositionKey {
+                sample_rate: current_source.sample_rate,
+                fft_size,
+                skip,
+                axis: (&plot_data.x_axis).into(),
+                viewport_min_bits: info.viewport.min.x.to_bits(),
+                viewport_max_bits: info.viewport.max.x.to_bits(),
+            };
+            {
+                profiling::scope!("spectrum.bin_position_cache");
+                bin_positions.update(key, bars_to_draw + 1 + skip, |i| {
+                    if i < skip {
+                        return [0.0, 0.0];
+                    }
+                    let bin_freq =
+                        frequency_of_bin(i, current_source.sample_rate as usize, fft_size);
+                    [
+                        plot_data.x_axis.gl_pos(bin_freq),
+                        plot_data.x_axis.val_to_pos(
+                            bin_freq,
+                            info.viewport.min.x,
+                            info.viewport.max.x,
+                        ),
+                    ]
+                });
             }
+            let position_array = bin_positions.as_slice();
 
             let mut last_px_pos: Option<[f32; 2]> = None;
             let mut acc = 0.0;
@@ -480,13 +536,15 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 bars_drawn += 1;
             }
 
-            resources.queue.write_buffer(
+            crate::upload_uniform_if_changed!(
+                *uniform_uploads,
+                "spectrum.uniform_buffer",
+                resources.queue,
                 &resources.uniform_buffer,
-                0,
                 bytemuck::bytes_of(&Uniforms {
                     color_end: self.color_end.to_normalized_gamma_f32(),
                     color_start: self.color_start.to_normalized_gamma_f32(),
-                }),
+                })
             );
 
             render_pass.set_bind_group(0, &resources.bind_group, &[]);
@@ -498,24 +556,33 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             if settings.draw_type == SpectrumVisualizerType::Line {
                 let px_width = 2.0 / info.viewport.width();
                 if settings.smooth_line {
-                    position_data = catmull_rom_spline(
-                        &position_data,
+                    catmull_rom_spline_into(
+                        position_data,
                         MIN_SMOOTHED_WIDTH,
                         px_width,
                         MIN_SMOOTHED_WIDTH * px_width,
+                        spline_padding,
+                        spline_output,
                     );
+                    std::mem::swap(position_data, spline_output);
                 }
 
-                let vertex_array: Vec<_> = position_data
-                    .windows(2)
-                    .flat_map(|w| [[w[0][0], w[0][1]], [w[1][0], w[1][1]]])
-                    .collect();
+                crate::refill_vec!(
+                    *vertex_array,
+                    position_data
+                        .windows(2)
+                        .flat_map(|w| [[w[0][0], w[0][1]], [w[1][0], w[1][1]]])
+                );
                 let count = (position_data.len() as u32).saturating_sub(1);
 
-                resources.queue.write_buffer(
-                    &resources.instance_buffer,
-                    0,
-                    bytemuck::cast_slice(&vertex_array),
+                crate::profile_upload!(
+                    "upload.geometry",
+                    "spectrum.instance_buffer.line_fill",
+                    resources.queue.write_buffer(
+                        &resources.instance_buffer,
+                        0,
+                        bytemuck::cast_slice(vertex_array),
+                    )
                 );
                 render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
@@ -526,20 +593,24 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.set_pipeline(&resources.line_pipeline);
                 render_pass.draw(0..(count - 1) * 2u32, 0..1);
             } else {
-                let instance_data: Vec<_> = position_data
-                    .windows(2)
-                    .map(|w| BarInstanceData {
+                crate::refill_vec!(
+                    *instance_data,
+                    position_data.windows(2).map(|w| BarInstanceData {
                         height: w[0][1],
                         x_1: w[0][0],
                         x_2: w[1][0],
                     })
-                    .collect();
+                );
                 let count = instance_data.len() as u32;
 
-                resources.queue.write_buffer(
-                    &resources.instance_buffer,
-                    0,
-                    bytemuck::cast_slice(&instance_data),
+                crate::profile_upload!(
+                    "upload.geometry",
+                    "spectrum.instance_buffer.bars",
+                    resources.queue.write_buffer(
+                        &resources.instance_buffer,
+                        0,
+                        bytemuck::cast_slice(instance_data),
+                    )
                 );
                 render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));

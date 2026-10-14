@@ -83,7 +83,7 @@ impl Widget for LoudnessWidget<'_> {
         let tick_size = 4.0;
 
         let color = self.visuals.plot_grid_highlight();
-        let stroke = Stroke::new(1.0, color);
+        let stroke = Stroke::new(1.0f32, color);
         let font = FontId::monospace(LOUDNESS_FONT_SIZE);
 
         for (i, tick) in self.tics.iter().enumerate() {

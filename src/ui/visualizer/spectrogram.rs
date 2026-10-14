@@ -53,6 +53,22 @@ pub struct Inner {
     /// Whether we should resize the FFT buffer in the next frame.
     do_resize_buffers: AtomicBool,
     rendering_resources: Mutex<Option<RenderResources>>,
+    scratch: Mutex<SpectrogramScratch>,
+}
+
+#[derive(PartialEq, Eq)]
+struct SpectrogramMappingKey {
+    sample_rate: u32,
+    fft_size: usize,
+    axis: crate::ui::vec_cache::AxisMappingKey,
+    axis_extent_bits: u32,
+}
+
+#[derive(Default)]
+struct SpectrogramScratch {
+    uniform_uploads: crate::ui::uniform_upload::UniformUploads,
+    mapping: crate::ui::vec_cache::CachedVec<SpectrogramMappingKey, i32>,
+    due_to_send: Vec<Vec<f32>>,
 }
 
 impl SpectrogramVisualizer {
@@ -74,6 +90,7 @@ impl SpectrogramVisualizer {
             fft_send_buffer: Mutex::new(CircularBuffer::boxed()),
             do_resize_buffers: Default::default(),
             rendering_resources: Default::default(),
+            scratch: Default::default(),
         }))
     }
 
@@ -227,6 +244,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         _encoder: &mut CommandEncoder,
         _resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
+        profiling::scope!("spectrogram.prepare");
         let mut resources = self.visualizer.rendering_resources.lock().unwrap();
 
         if resources.is_none()
@@ -239,6 +257,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             // In case we are re-creating the pipeline (fft-size changed)
             // we'll need to re-fill the gradient texture.
             self.visualizer.current_gradient.lock().unwrap().take();
+            self.visualizer.scratch.lock().unwrap().mapping.invalidate();
             let buff_length =
                 compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
             self.visualizer
@@ -319,6 +338,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 push_constant_ranges: &[],
             });
 
+            self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 pipeline: create_pipeline(
                     device,
@@ -346,6 +366,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         render_pass: &mut RenderPass<'static>,
         _callback_resources: &CallbackResources,
     ) {
+        profiling::scope!("spectrogram.paint");
         let resources = self.visualizer.rendering_resources.lock().unwrap();
 
         if let Some(resources) = resources.as_ref() {
@@ -372,7 +393,13 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             }
 
             let mut send_buffer = self.visualizer.fft_send_buffer.lock().unwrap();
-            let mut due_to_send = Vec::with_capacity(send_buffer.len());
+            let mut scratch = self.visualizer.scratch.lock().unwrap();
+            let SpectrogramScratch {
+                uniform_uploads,
+                mapping,
+                due_to_send,
+            } = &mut *scratch;
+            due_to_send.clear();
             while let Some(x) = send_buffer.pop_front() {
                 due_to_send.push(x);
             }
@@ -389,7 +416,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             let fft_buffer_length = self.visualizer.fft_buffer_length.load(Ordering::Acquire);
 
             let mut head = self.visualizer.head_offset.load(Ordering::Relaxed);
-            for mut buf in due_to_send {
+            for mut buf in due_to_send.drain(..) {
                 if buf.is_empty() {
                     continue;
                 }
@@ -413,9 +440,11 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 }
             }
 
-            queue.write_buffer(
+            crate::upload_uniform_if_changed!(
+                *uniform_uploads,
+                "spectrogram.uniform_buffer",
+                queue,
                 &resources.uniform_buffer,
-                0,
                 bytemuck::cast_slice(&[Uniforms {
                     width: info.viewport.width() as i32,
                     height: info.viewport.height() as i32,
@@ -423,23 +452,40 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                     buffer_size: fft_buffer_length as i32,
                     is_vertical: settings.is_vertical as i32,
                     _padding: 0,
-                }]),
+                }])
             );
 
-            let mut pos_map = Vec::with_capacity(frequency_axis_spectrogram_width as usize);
             let fft_size = self.visualizer.audio_service.get_fft_size();
-
-            for i in 0..frequency_axis_spectrogram_width as usize {
-                let freq = frequency_axis
-                    .norm_pos_to_val(i as f32 / (frequency_axis_spectrogram_width - 1.0).max(1.0));
-                let position_in_buffer = source.bin_of_frequency(freq, fft_size);
-                pos_map.push(position_in_buffer as i32);
+            let key = SpectrogramMappingKey {
+                sample_rate: source.sample_rate,
+                fft_size,
+                axis: frequency_axis.into(),
+                axis_extent_bits: frequency_axis_spectrogram_width.to_bits(),
+            };
+            let mapping_changed = {
+                profiling::scope!("spectrogram.mapping_cache");
+                mapping.update(
+                    key,
+                    (frequency_axis_spectrogram_width as usize).min(MAX_RESOLUTION),
+                    |i| {
+                        let freq = frequency_axis.norm_pos_to_val(
+                            i as f32 / (frequency_axis_spectrogram_width - 1.0).max(1.0),
+                        );
+                        source.bin_of_frequency(freq, fft_size) as i32
+                    },
+                )
+            };
+            if mapping_changed && !mapping.as_slice().is_empty() {
+                crate::profile_upload!(
+                    "upload.mapping",
+                    "spectrogram.pos_mapping_buffer",
+                    queue.write_buffer(
+                        &resources.pos_mapping_buffer,
+                        0,
+                        bytemuck::cast_slice(mapping.as_slice()),
+                    )
+                );
             }
-            queue.write_buffer(
-                &resources.pos_mapping_buffer,
-                0,
-                bytemuck::cast_slice(&pos_map),
-            );
 
             render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);

@@ -14,3 +14,5 @@ pub enum VisualizerType {
     Waveform,
     StereoImager,
 }
+
+mod extended_waveform_cache;

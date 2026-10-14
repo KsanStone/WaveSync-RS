@@ -41,6 +41,7 @@ impl AudioService {
             latest_fft: Mutex::new(std::array::from_fn(|_| vec![])),
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),
             samples_written: Default::default(),
+            channel_samples_written: Default::default(),
             last_fft_idx: Default::default(),
             last_frame_size: Default::default(),
             fft_rate: AtomicU32::new(60),
@@ -114,6 +115,7 @@ pub struct Inner {
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
     samples_written: AtomicU64,
+    channel_samples_written: [AtomicU64; CHANNELS],
     last_fft_idx: AtomicU64,
     last_frame_size: AtomicU64,
     current_capture_source: Mutex<Option<CaptureSource>>,
@@ -189,9 +191,14 @@ impl Inner {
             }
             channels + 1
         };
-        drop(buffer);
+        // Publish buffer positions while holding the same lock as the samples.
+        for channel in 0..fft_channels {
+            let count = if channel == 0 { samples[0].len() } else { samples[channel - 1].len() };
+            self.channel_samples_written[channel].fetch_add(count as u64, Ordering::Release);
+        }
         self.samples_written
             .fetch_add(samples[0].len() as u64, Ordering::Release);
+        drop(buffer);
         self.do_fft(fft_channels);
         self.do_loudness_calc(&samples);
     }
@@ -277,10 +284,16 @@ impl Inner {
         drop: usize,
         take: usize,
     ) -> Vec<f32> {
+        let mut result = Vec::new();
+        self.get_samples_aligned_into(channel, count, drop, take, &mut result);
+        result
+    }
+
+    pub fn get_samples_aligned_into(&self, channel: AudioChannel, count: usize, drop: usize, take: usize, result: &mut Vec<f32>) {
         let buffer = &self.audio_buffer.lock().unwrap()[channel.get_index()];
-        let start_idx = buffer.len().saturating_sub(count).saturating_add(drop);
+        let start_idx = buffer.len().saturating_sub(count).saturating_add(drop).min(buffer.len());
         let end_idx = start_idx.saturating_add(take).min(buffer.len());
-        buffer.range(start_idx..end_idx).copied().collect()
+        crate::refill_vec!(*result, buffer.range(start_idx..end_idx).copied());
     }
 
     pub fn get_fft_rate(&self) -> u32 {
@@ -290,6 +303,11 @@ impl Inner {
     pub fn get_fft(&self, channel: AudioChannel) -> Vec<f32> {
         let latest_fft = &self.latest_fft.lock().unwrap()[channel.get_index()];
         latest_fft.clone()
+    }
+
+    pub fn get_fft_into(&self, channel: AudioChannel, result: &mut Vec<f32>) {
+        let latest_fft = self.latest_fft.lock().unwrap();
+        crate::refill_vec!(*result, latest_fft[channel.get_index()].iter().copied());
     }
 
     pub fn get_fft_size(&self) -> usize {
@@ -309,6 +327,11 @@ impl Inner {
 
     pub fn get_samples_written(&self) -> u64 {
         self.samples_written.load(Ordering::Acquire)
+    }
+
+    /// Per-channel position for caching immutable ranges of audio history.
+    pub fn get_channel_samples_written(&self, channel: AudioChannel) -> u64 {
+        self.channel_samples_written[channel.get_index()].load(Ordering::Acquire)
     }
 
     pub fn get_device_name(&self) -> Option<String> {

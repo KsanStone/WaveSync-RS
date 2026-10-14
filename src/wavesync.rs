@@ -1,4 +1,4 @@
-use crate::app::{AppHandler, WindowBackground};
+use crate::app::{AppHandler, FrameSettings, WindowBackground};
 use crate::media::{MediaInfo, MediaProvider, platform_media_provider};
 use crate::persistance::{APP_KEY, Persistence};
 use crate::sound;
@@ -13,7 +13,9 @@ use crate::ui::visualizer::extended_waveform::{
 };
 use crate::ui::visualizer::spectrogram::{SpectrogramSettings, SpectrogramVisualizer};
 use crate::ui::visualizer::spectrum::{SpectrumVisualizer, SpectrumVisualizerSettings};
-use crate::ui::visualizer::stereo_imager::{StereoImagerVisualizer, StereoImagerVisualizerSettings};
+use crate::ui::visualizer::stereo_imager::{
+    StereoImagerVisualizer, StereoImagerVisualizerSettings,
+};
 use crate::ui::visualizer::vectorscope::{VectorscopeSettings, VectorscopeVisualizer};
 use crate::ui::visualizer::visualizer_widget::{RenderArgs, Visualizer, VisualizerWidget};
 use crate::ui::visualizer::waveform::{WaveformSettings, WaveformVisualizer};
@@ -62,6 +64,8 @@ pub struct WaveSyncAppData {
     pub theme_name: String,
     pub audio_device_name: Option<String>,
     pub window_background: WindowBackground,
+    #[serde(default)]
+    pub frame_settings: FrameSettings,
 }
 
 pub struct WaveSyncVisuals {
@@ -362,6 +366,7 @@ impl WaveSync {
 
 impl AppHandler for WaveSync {
     fn update(&mut self, ctx: &egui::Context) {
+        profiling::scope!("ui.build");
         let delta_t = self.last_update.elapsed().as_secs_f32();
         self.last_update = Instant::now();
         catppuccin_egui::set_theme(ctx, self.visuals.theme);
@@ -373,7 +378,6 @@ impl AppHandler for WaveSync {
                 style.visuals.extreme_bg_color = Color32::from_rgba_unmultiplied(18, 19, 26, 120);
             });
         }
-        ctx.request_repaint();
 
         let mut bottom_panel = egui::TopBottomPanel::bottom("bottom_bar").resizable(false);
         if self.visuals.translucent_background() {
@@ -381,66 +385,78 @@ impl AppHandler for WaveSync {
                 bottom_panel.frame(egui::Frame::default().fill(self.visuals.background_overlay()));
         }
         bottom_panel.show(ctx, |ui| {
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let mut height = 24.0;
-                ui.ctx().fonts(|fonts| {
-                    height = fonts.row_height(&FontId::monospace(LOUDNESS_FONT_SIZE))
-                        * FREQ_LABEL_ROW_COUNT as f32;
-                });
-
-                if ui
-                    .add(
-                        Button::new(egui_phosphor::regular::GEAR)
-                            .min_size(Vec2::new(height, height)),
-                    )
-                    .clicked()
-                {
-                    self.settings_shown = true;
+            profiling::scope!("ui.bottom_bar");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(snapshot) = ctx.data(|data| {
+                    data.get_temp::<crate::performance::Snapshot>(egui::Id::new("performance"))
+                }) {
+                    snapshot.ui(ui);
                 }
+                ui.allocate_ui_with_layout(
+                    ui.available_size(),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        let mut height = 24.0;
+                        ui.ctx().fonts(|fonts| {
+                            height = fonts.row_height(&FontId::monospace(LOUDNESS_FONT_SIZE))
+                                * FREQ_LABEL_ROW_COUNT as f32;
+                        });
 
-                let sources = self.audio_service.available_sources.lock().unwrap();
-                let mut current_value = self.audio_service.get_source().id;
-                egui::ComboBox::from_id_salt("source_select")
-                    .selected_text(self.audio_service.get_source().name)
-                    .show_ui(ui, |ui| {
-                        for source in &*sources {
-                            ui.selectable_value(
-                                &mut current_value,
-                                source.id.clone(),
-                                source.name.clone(),
-                            );
+                        if ui
+                            .add(
+                                Button::new(egui_phosphor::regular::GEAR)
+                                    .min_size(Vec2::new(height, height)),
+                            )
+                            .clicked()
+                        {
+                            self.settings_shown = true;
                         }
-                    });
-                drop(sources);
-                self.audio_service.update_source(current_value);
 
-                if let Some(media) = self.media_provider.current_media() {
-                    media_card(ui, ctx, &media, &mut self.media_texture, height);
-                } else {
-                    self.media_texture = None;
-                }
+                        let sources = self.audio_service.available_sources.lock().unwrap();
+                        let mut current_value = self.audio_service.get_source().id;
+                        egui::ComboBox::from_id_salt("source_select")
+                            .selected_text(self.audio_service.get_source().name)
+                            .show_ui(ui, |ui| {
+                                for source in &*sources {
+                                    ui.selectable_value(
+                                        &mut current_value,
+                                        source.id.clone(),
+                                        source.name.clone(),
+                                    );
+                                }
+                            });
+                        drop(sources);
+                        self.audio_service.update_source(current_value);
 
-                peak_labels(ui, self.audio_service.get_peak_labels(), height);
+                        if let Some(media) = self.media_provider.current_media() {
+                            media_card(ui, ctx, &media, &mut self.media_texture, height);
+                        } else {
+                            self.media_texture = None;
+                        }
 
-                if let Some(dummy) =
-                    self.audio_service
-                        .audio_backend
-                        .lock()
-                        .unwrap()
-                        .as_any()
-                        .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>()
-                {
-                    let mut seq = dummy.pattern_data.sequencer_frequency.lock().unwrap();
-                    ui.add(egui::Slider::new(&mut *seq, 20.0..=1000.0));
-                }
+                        peak_labels(ui, self.audio_service.get_peak_labels(), height);
 
-                ui.add(self.loudness_indicator.ui(
-                    &self.audio_service.get_loudness_values(),
-                    delta_t,
-                    &self.visuals,
-                    height,
-                    self.audio_service.get_loudness_unit(),
-                ));
+                        if let Some(dummy) = self
+                            .audio_service
+                            .audio_backend
+                            .lock()
+                            .unwrap()
+                            .as_any()
+                            .downcast_ref::<sound::dummy_audio_backend::DummyAudioBackend>()
+                        {
+                            let mut seq = dummy.pattern_data.sequencer_frequency.lock().unwrap();
+                            ui.add(egui::Slider::new(&mut *seq, 20.0..=1000.0));
+                        }
+
+                        ui.add(self.loudness_indicator.ui(
+                            &self.audio_service.get_loudness_values(),
+                            delta_t,
+                            &self.visuals,
+                            height,
+                            self.audio_service.get_loudness_unit(),
+                        ));
+                    },
+                );
             });
         });
 
@@ -450,6 +466,7 @@ impl AppHandler for WaveSync {
                 central_panel.frame(egui::Frame::default().fill(self.visuals.background_overlay()));
         }
         central_panel.show(ctx, |ui| {
+            profiling::scope!("ui.visualizers_layout");
             if self.audio_service.get_active_audio_channels() == 1 {
                 self.mono_layout(ui, ctx);
             } else {
@@ -503,6 +520,25 @@ impl AppHandler for WaveSync {
                             });
                         self.data.write().unwrap().window_background = background;
                     });
+                    ui.separator();
+                    ui.label(RichText::new("Frame rate").strong());
+                    {
+                        let mut data = self.data.write().unwrap();
+                        ui.checkbox(&mut data.frame_settings.vsync, "Vsync");
+                        ui.horizontal(|ui| {
+                            let settings = &mut data.frame_settings;
+                            let mut enabled = settings.fps_limit_enabled.unwrap_or(settings.fps_target > 0);
+                            ui.checkbox(&mut enabled, "Limit FPS");
+                            settings.fps_limit_enabled = Some(enabled);
+                            if settings.fps_target == 0 { settings.fps_target = 60; }
+                            settings.fps_target = settings.fps_target.clamp(10, 1000);
+                            ui.add_enabled(enabled, egui::DragValue::new(&mut settings.fps_target)
+                                .range(10..=1000).speed(1.0).suffix(" FPS"));
+                        });
+                        ui.label("Vsync may limit FPS below the target to the display refresh rate.");
+                    }
+                    ui.separator();
+                    crate::cpu_profiler::settings_ui(ui);
                     let mut val = self.audio_service.fft_rate.load(std::sync::atomic::Ordering::Acquire);
                     ui.horizontal(|ui| {
                         ui.label("Fft rate");
@@ -529,6 +565,10 @@ impl AppHandler for WaveSync {
         data.audio_device_name = self.audio_service.get_device_name();
 
         persistence.set(APP_KEY, &*data);
+    }
+
+    fn frame_settings(&self) -> FrameSettings {
+        self.data.read().unwrap().frame_settings
     }
 
     fn window_background(&self) -> WindowBackground {

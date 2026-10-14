@@ -7,6 +7,8 @@ use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 pub mod gradient;
 pub mod loudness_indicator;
 pub mod plot;
+pub(crate) mod uniform_upload;
+pub(crate) mod vec_cache;
 pub mod visualizer;
 
 #[macro_export]
@@ -247,7 +249,11 @@ pub fn write_1d_texture(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[[f
     };
 
     // Perform the texture write operation
-    queue.write_texture(texture.as_image_copy(), &tex_bytes, buf_layout, copy_size);
+    crate::profile_upload!(
+        "upload.texture",
+        "texture.gradient",
+        queue.write_texture(texture.as_image_copy(), &tex_bytes, buf_layout, copy_size)
+    );
 }
 
 pub fn write_2d_texture_row(
@@ -289,7 +295,11 @@ pub fn write_2d_texture_row(
         depth_or_array_layers: 1,
     };
 
-    queue.write_texture(texture_copy, &row_bytes, data_layout, copy_size);
+    crate::profile_upload!(
+        "upload.texture",
+        "texture.spectrogram_row",
+        queue.write_texture(texture_copy, &row_bytes, data_layout, copy_size)
+    );
 }
 
 pub fn viewport(rect: Rect, screen_descriptor: &ScreenDescriptor, pass: &mut RenderPass) {
@@ -303,24 +313,27 @@ pub fn viewport(rect: Rect, screen_descriptor: &ScreenDescriptor, pass: &mut Ren
     );
 }
 
-pub fn catmull_rom_spline(
+pub fn catmull_rom_spline_into(
     points: &[[f32; 2]],
     px_per_point: f32,
     px_width: f32,
     min_width: f32,
-) -> Vec<[f32; 2]> {
+    padded: &mut Vec<[f32; 2]>,
+    result: &mut Vec<[f32; 2]>,
+) {
+    result.clear();
+    padded.clear();
     let n = points.len();
     if n < 2 {
-        return points.to_vec();
+        result.extend_from_slice(points);
+        return;
     }
 
     // Pad the ends to keep first/last visible
-    let mut padded = Vec::with_capacity(n + 2);
     padded.push([points[0][0] - px_width * 50.0, points[0][1]]);
     padded.extend_from_slice(points);
     padded.push(points[n - 1]);
 
-    let mut result = Vec::new();
     result.push(points[0]); // explicitly keep first point
 
     for i in 0..padded.len() - 3 {
@@ -359,7 +372,6 @@ pub fn catmull_rom_spline(
     }
 
     result.push(points[n - 1]);
-    result
 }
 
 pub fn log_axis_sel(ui: &mut Ui, is_log: &mut bool) {
@@ -405,4 +417,32 @@ pub fn freq_spectrum_select(ui: &mut Ui, min: &mut u32, max: &mut u32, f_max: u3
     );
     *max = (*max).clamp(min_sep, *full_range.end());
     *min = (*min).clamp(0, max.saturating_sub(min_sep));
+}
+
+#[cfg(test)]
+mod spline_scratch_tests {
+    use super::*;
+    #[test]
+    fn spline_reuses_output_without_retaining_old_points() {
+        let mut padding = Vec::new();
+        let mut result = Vec::new();
+        catmull_rom_spline_into(
+            &[[0.0, 0.0], [1.0, 1.0], [2.0, 0.0]],
+            1.0,
+            0.1,
+            0.01,
+            &mut padding,
+            &mut result,
+        );
+        assert_eq!(result[0], [0.0, 0.0]);
+        assert!((result[5][0] - 0.75).abs() < 1e-6);
+        assert!((result[5][1] - 0.5625).abs() < 1e-6);
+        assert_eq!(result.last(), Some(&[2.0, 0.0]));
+        let ptr = result.as_ptr();
+        catmull_rom_spline_into(&[[3.0, 4.0]], 1.0, 0.1, 0.01, &mut padding, &mut result);
+        assert_eq!(result, [[3.0, 4.0]]);
+        assert_eq!(result.as_ptr(), ptr);
+        catmull_rom_spline_into(&[], 1.0, 0.1, 0.01, &mut padding, &mut result);
+        assert!(result.is_empty());
+    }
 }

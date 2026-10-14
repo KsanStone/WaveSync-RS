@@ -30,6 +30,14 @@ pub struct Inner {
     channel: AudioChannel,
     data: Arc<RwLock<WaveSyncAppData>>,
     render_resources: Mutex<Option<RenderResources>>,
+    scratch: Mutex<WaveformScratch>,
+}
+
+#[derive(Default)]
+struct WaveformScratch {
+    uniform_uploads: crate::ui::uniform_upload::UniformUploads,
+    samples: Vec<f32>,
+    vertices: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -61,6 +69,7 @@ impl WaveformVisualizer {
             settings_open: Default::default(),
             data,
             render_resources: Default::default(),
+            scratch: Default::default(),
         }))
     }
 }
@@ -68,11 +77,13 @@ impl WaveformVisualizer {
 impl Visualizer for WaveformVisualizer {
     fn get_plot_data(&self) -> PlotData {
         let range = self.data.read().unwrap().waveform_settings.range;
-        PlotData::XY(XYPlotData::from_axis(
-            Axis::linear(0.0, 1.0),
-            Axis::linear(-range, range).always_show_zero(true),
+        PlotData::XY(
+            XYPlotData::from_axis(
+                Axis::linear(0.0, 1.0),
+                Axis::linear(-range, range).always_show_zero(true),
+            )
+            .x_axis_shown(false),
         )
-        .x_axis_shown(false))
     }
 
     fn get_draw_callback(&self, rect: Rect, visuals: &WaveSyncVisuals) -> Option<PaintCallback> {
@@ -151,6 +162,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
         _encoder: &mut wgpu::CommandEncoder,
         _resources: &mut CallbackResources,
     ) -> Vec<wgpu::CommandBuffer> {
+        profiling::scope!("waveform.prepare");
         let mut resources = self.visualizer.render_resources.lock().unwrap();
 
         if resources.is_none() {
@@ -179,6 +191,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 push_constant_ranges: &[],
             });
 
+            self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 queue: queue.clone(),
                 vertex_buffer,
@@ -203,6 +216,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
         render_pass: &mut wgpu::RenderPass<'static>,
         _resources: &CallbackResources,
     ) {
+        profiling::scope!("waveform.paint");
         let channel = self.visualizer.channel;
         let settings = &self.visualizer.data.read().unwrap().waveform_settings;
         let source = self.visualizer.audio_service.get_source();
@@ -253,11 +267,26 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 }
             }
 
-            let latest_samples =
-                audio_service.get_samples_aligned(channel, to_read, drop as usize, take);
+            let mut scratch = self.visualizer.scratch.lock().unwrap();
+            let WaveformScratch {
+                uniform_uploads,
+                samples: latest_samples,
+                vertices,
+            } = &mut *scratch;
+            audio_service.get_samples_aligned_into(
+                channel,
+                to_read,
+                drop as usize,
+                take,
+                latest_samples,
+            );
             let step = (latest_samples.len() / half_buffer_size as usize).max(1);
 
-            let mut vertices = vec![[0.0, 0.0]; (buffer_size as usize).min(latest_samples.len())];
+            crate::resize_scratch!(
+                *vertices,
+                (buffer_size as usize).min(latest_samples.len()),
+                [0.0, 0.0]
+            );
             let mut vertices_written = 0;
             for (i, sample) in latest_samples.iter().enumerate().step_by(step) {
                 let vertex_index = i / step;
@@ -271,13 +300,22 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 vertices_written += 1;
             }
 
-            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
-            queue.write_buffer(
+            vertices.truncate(vertices_written as usize);
+            if !vertices.is_empty() {
+                crate::profile_upload!(
+                    "upload.geometry",
+                    "waveform.vertices",
+                    queue.write_buffer(buffer, 0, bytemuck::cast_slice(vertices))
+                );
+            }
+            crate::upload_uniform_if_changed!(
+                *uniform_uploads,
+                "waveform.uniform_buffer",
+                queue,
                 uniform_buffer,
-                0,
                 bytemuck::bytes_of(&Uniforms {
                     color: self.color.to_normalized_gamma_f32(),
-                }),
+                })
             );
 
             render_pass.set_bind_group(0, bind_group, &[]);

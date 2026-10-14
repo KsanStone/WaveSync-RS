@@ -1,6 +1,6 @@
+use super::extended_waveform_cache::{ColumnCache, Summary};
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
-use crate::sound::loudness::rms::calc_rms;
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{Ui, VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
@@ -10,7 +10,6 @@ use egui::{PaintCallback, PaintCallbackInfo, Rect, Slider};
 use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::wgpu::{BufferAddress, CommandBuffer, CommandEncoder, Device, Queue, RenderPass};
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor, wgpu};
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -26,6 +25,7 @@ pub struct Inner {
     channel: AudioChannel,
     data: Arc<RwLock<WaveSyncAppData>>,
     render_resources: Mutex<Option<RenderResources>>,
+    waveform_cache: Mutex<WaveformCache>,
 }
 
 pub struct ExtendedWaveformVisualizerCallback {
@@ -46,6 +46,7 @@ impl ExtendedWaveformVisualizer {
             settings_open: Default::default(),
             data,
             render_resources: Default::default(),
+            waveform_cache: Default::default(),
         }))
     }
 }
@@ -109,19 +110,20 @@ impl CallbackTrait for ExtendedWaveformVisualizerCallback {
         _egui_encoder: &mut CommandEncoder,
         _callback_resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
+        profiling::scope!("extended_waveform.prepare");
         let mut resources = self.visualizer.render_resources.lock().unwrap();
 
         if resources.is_none() {
             let vertex_buffer_sample = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ex-wave line vertex buffer 1"),
-                size: (size_of::<f32>() * 2 * MAX_RESOLUTION) as BufferAddress,
+                size: (size_of::<[f32; 2]>() * 2 * MAX_RESOLUTION) as BufferAddress,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
 
             let vertex_buffer_rms = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ex-wave line vertex buffer 2"),
-                size: (size_of::<f32>() * 2 * MAX_RESOLUTION) as BufferAddress,
+                size: (size_of::<[f32; 2]>() * 2 * MAX_RESOLUTION) as BufferAddress,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -171,6 +173,11 @@ impl CallbackTrait for ExtendedWaveformVisualizerCallback {
                 "extended-waveform-pipeline",
             );
 
+            {
+                let mut cache = self.visualizer.waveform_cache.lock().unwrap();
+                cache.vertices_uploaded = false;
+                cache.uniform_uploads = Default::default();
+            }
             *resources = Some(RenderResources {
                 queue: queue.clone(),
                 vertex_buffer_sample,
@@ -192,80 +199,132 @@ impl CallbackTrait for ExtendedWaveformVisualizerCallback {
         render_pass: &mut RenderPass<'static>,
         _callback_resources: &CallbackResources,
     ) {
+        profiling::scope!("extended_waveform.paint");
         if let Some(resources) = self.visualizer.render_resources.lock().unwrap().as_ref() {
-            let width = (info.viewport.width() * info.pixels_per_point) as usize;
-
-            let mut vertices = Vec::with_capacity(width * 2);
-            let mut rms_vertices = Vec::with_capacity(width * 2);
+            let mut cache = self.visualizer.waveform_cache.lock().unwrap();
+            let width =
+                ((info.viewport.width() * info.pixels_per_point) as usize).min(MAX_RESOLUTION);
             let plot_data = self.visualizer.get_plot_data().expect_xy();
-
-            {
-                let buf = &self.visualizer.audio_service.audio_buffer.lock().unwrap()
-                    [self.visualizer.channel.get_index()];
-                let written = self.visualizer.audio_service.get_samples_written();
-                let size = buf.len();
-                let chunk_size = size / (width + 1);
-                let skip = chunk_size.saturating_sub((written % chunk_size as u64) as usize);
-
-                for i in 0..width {
-                    let start = i * chunk_size + skip;
-                    let end = start + chunk_size;
-
-                    let min_max = buf.range(start..end).minmax();
-                    let (min, max) = min_max.into_option().unwrap_or((&0.0, &0.0));
-                    let x = (i as f32) / (width as f32) * 2.0 - 1.0;
-
-                    let rms = calc_rms(buf.range(start..end), chunk_size);
-                    let rms_min = (-rms).clamp(*min, *max);
-                    let rms_max = rms.clamp(*min, *max);
-
-                    vertices.push([x, plot_data.y_axis.gl_pos(*min)]);
-                    vertices.push([x, plot_data.y_axis.gl_pos(*max)]);
-
-                    rms_vertices.push([x, plot_data.y_axis.gl_pos(rms_min)]);
-                    rms_vertices.push([x, plot_data.y_axis.gl_pos(rms_max)]);
+            let range = self
+                .visualizer
+                .data
+                .read()
+                .unwrap()
+                .extended_waveform_settings
+                .range;
+            let changed = {
+                let buffer = {
+                    profiling::scope!("extended_waveform.audio_lock_wait");
+                    self.visualizer.audio_service.audio_buffer.lock().unwrap()
+                };
+                let buf = &buffer[self.visualizer.channel.get_index()];
+                let written = self
+                    .visualizer
+                    .audio_service
+                    .get_channel_samples_written(self.visualizer.channel);
+                profiling::scope!("extended_waveform.update_cached_columns");
+                cache.columns.update(width, buf.len(), written, |range| {
+                    profiling::scope!("extended_waveform.scan_new_column");
+                    Summary::scan(buf.range(range))
+                })
+            };
+            let vertices_changed =
+                changed || cache.vertex_range != Some(range) || !cache.vertices_uploaded;
+            if vertices_changed {
+                {
+                    profiling::scope!("extended_waveform.build_vertices");
+                    cache.vertices.clear();
+                    cache.rms_vertices.clear();
+                    let width = cache.columns.columns.len();
+                    let WaveformCache {
+                        columns,
+                        vertices,
+                        rms_vertices,
+                        ..
+                    } = &mut *cache;
+                    for (i, column) in columns.columns.iter().enumerate() {
+                        let x = i as f32 / width as f32 * 2.0 - 1.0;
+                        vertices.push([x, plot_data.y_axis.gl_pos(column.min)]);
+                        vertices.push([x, plot_data.y_axis.gl_pos(column.max)]);
+                        rms_vertices.push([
+                            x,
+                            plot_data
+                                .y_axis
+                                .gl_pos((-column.rms).clamp(column.min, column.max)),
+                        ]);
+                        rms_vertices.push([
+                            x,
+                            plot_data
+                                .y_axis
+                                .gl_pos(column.rms.clamp(column.min, column.max)),
+                        ]);
+                    }
+                    cache.vertex_range = Some(range);
                 }
+                if !cache.vertices.is_empty() {
+                    crate::profile_upload!(
+                        "upload.geometry",
+                        "extended_waveform.vertex_buffer_sample",
+                        resources.queue.write_buffer(
+                            &resources.vertex_buffer_sample,
+                            0,
+                            bytemuck::cast_slice(&cache.vertices),
+                        )
+                    );
+                    crate::profile_upload!(
+                        "upload.geometry",
+                        "extended_waveform.vertex_buffer_rms",
+                        resources.queue.write_buffer(
+                            &resources.vertex_buffer_rms,
+                            0,
+                            bytemuck::cast_slice(&cache.rms_vertices),
+                        )
+                    );
+                }
+                cache.vertices_uploaded = true;
             }
 
-            resources.queue.write_buffer(
-                &resources.vertex_buffer_sample,
-                0,
-                bytemuck::cast_slice(&vertices),
-            );
-
-            resources.queue.write_buffer(
+            crate::upload_uniform_if_changed!(
+                cache.uniform_uploads,
+                "extended_waveform.uniform_buffer_sample",
+                resources.queue,
                 &resources.uniform_buffer_sample,
-                0,
                 bytemuck::bytes_of(&Uniforms {
                     color: self.sample_line_color.to_normalized_gamma_f32(),
-                }),
+                })
             );
 
-            resources.queue.write_buffer(
-                &resources.vertex_buffer_rms,
-                0,
-                bytemuck::cast_slice(&rms_vertices),
-            );
-
-            resources.queue.write_buffer(
+            crate::upload_uniform_if_changed!(
+                cache.uniform_uploads,
+                "extended_waveform.uniform_buffer_rms",
+                resources.queue,
                 &resources.uniform_buffer_rms,
-                0,
                 bytemuck::bytes_of(&Uniforms {
                     color: self.rms_color.to_normalized_gamma_f32(),
-                }),
+                })
             );
 
             render_pass.set_pipeline(&resources.pipeline);
 
             render_pass.set_bind_group(0, &resources.bind_group_sample, &[]);
             render_pass.set_vertex_buffer(0, resources.vertex_buffer_sample.slice(..));
-            render_pass.draw(0..vertices.len() as u32, 0..1);
+            render_pass.draw(0..cache.vertices.len() as u32, 0..1);
 
             render_pass.set_bind_group(0, &resources.bind_group_rms, &[]);
             render_pass.set_vertex_buffer(0, resources.vertex_buffer_rms.slice(..));
-            render_pass.draw(0..rms_vertices.len() as u32, 0..1);
+            render_pass.draw(0..cache.rms_vertices.len() as u32, 0..1);
         }
     }
+}
+
+#[derive(Default)]
+struct WaveformCache {
+    columns: ColumnCache,
+    vertices: Vec<[f32; 2]>,
+    rms_vertices: Vec<[f32; 2]>,
+    vertex_range: Option<f32>,
+    vertices_uploaded: bool,
+    uniform_uploads: crate::ui::uniform_upload::UniformUploads,
 }
 
 struct RenderResources {

@@ -8,7 +8,8 @@ use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use winit::event_loop::ControlFlow;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
@@ -162,6 +163,28 @@ fn apply_legacy_acrylic(window: &Window, color: Option<(u8, u8, u8, u8)>) -> Res
         .ok_or("SetWindowCompositionAttribute failed".into())
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct FrameSettings {
+    pub vsync: bool,
+    pub fps_target: u32,
+    /// Missing in older settings, where a nonzero target enabled the cap.
+    #[serde(default)]
+    pub fps_limit_enabled: Option<bool>,
+}
+impl Default for FrameSettings {
+    fn default() -> Self { Self { vsync: true, fps_target: 60, fps_limit_enabled: Some(false) } }
+}
+impl FrameSettings {
+    fn interval(self) -> Option<Duration> {
+        self.fps_limit_enabled.unwrap_or(self.fps_target > 0)
+            .then(|| Duration::from_secs_f64(1.0 / self.fps_target.clamp(10, 1000) as f64))
+    }
+    fn present_mode(self) -> wgpu::PresentMode {
+        if self.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync }
+    }
+}
+
 pub struct AppState {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -169,6 +192,7 @@ pub struct AppState {
     pub surface: wgpu::Surface<'static>,
     pub scale_factor: f32,
     pub egui_renderer: EguiRenderer,
+    performance: crate::performance::Performance,
 }
 
 impl AppState {
@@ -189,7 +213,10 @@ impl AppState {
             .await
             .expect("Failed to find an appropriate adapter");
 
-        let features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let timing_features =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        let features = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+            | (adapter.features() & timing_features);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
@@ -241,6 +268,7 @@ impl AppState {
         surface.configure(&device, &surface_config);
 
         let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, window);
+        let performance = crate::performance::Performance::new(&device, &queue);
         let scale_factor = 1.0;
 
         let mut fonts = egui::FontDefinitions::default();
@@ -253,6 +281,7 @@ impl AppState {
             surface,
             surface_config,
             egui_renderer,
+            performance,
             scale_factor,
         }
     }
@@ -313,6 +342,7 @@ pub struct App {
     name: &'static str,
     last_save: Instant,
     window_background: WindowBackground,
+    next_frame: Instant,
 }
 
 pub trait AppHandler {
@@ -323,6 +353,8 @@ pub trait AppHandler {
     fn post_egui(&mut self, args: RenderArgs);
 
     fn window_background(&self) -> WindowBackground;
+
+    fn frame_settings(&self) -> FrameSettings;
 }
 
 impl App {
@@ -351,6 +383,7 @@ impl App {
             persistence,
             last_save: Instant::now(),
             window_background: WindowBackground::Solid,
+            next_frame: Instant::now(),
         }
     }
 
@@ -385,6 +418,9 @@ impl App {
     }
 
     fn handle_redraw(&mut self) {
+        #[cfg(feature = "cpu-profiling")]
+        if profiling::puffin::are_scopes_on() { profiling::finish_frame!(); }
+        profiling::scope!("render.frame");
         // Attempt to handle minimizing window
         if let Some(window) = self.window.as_ref()
             && let Some(min) = window.is_minimized()
@@ -401,7 +437,10 @@ impl App {
                 * state.scale_factor,
         };
 
-        let surface_texture = state.surface.get_current_texture();
+        let surface_texture = {
+            profiling::scope!("wait.acquire_surface");
+            state.surface.get_current_texture()
+        };
 
         match surface_texture {
             Err(SurfaceError::Outdated) => {
@@ -422,9 +461,15 @@ impl App {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let cpu_start = Instant::now();
         let mut encoder = state
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let measured = state.performance.begin(&state.device, &mut encoder);
+        state.egui_renderer.context().data_mut(|data| {
+            data.insert_temp(egui::Id::new("performance"), state.performance.snapshot())
+        });
 
         // Start every frame with transparent pixels so DWM can compose Mica/Acrylic behind the UI.
         {
@@ -447,7 +492,10 @@ impl App {
         let window = self.window.as_ref().unwrap();
 
         {
-            state.egui_renderer.begin_frame(window);
+            {
+                profiling::scope!("egui.begin_frame");
+                state.egui_renderer.begin_frame(window);
+            }
 
             let ctx = state.egui_renderer.context();
             self.handler.update(ctx);
@@ -477,12 +525,28 @@ impl App {
             });
         }
 
-        state.queue.submit(Some(encoder.finish()));
-        surface_texture.present();
+        state.performance.end_gpu(&mut encoder, measured);
+        let command_buffer = {
+            profiling::scope!("wgpu.finish_encoder");
+            encoder.finish()
+        };
+        // Submission/presentation may block on driver pacing or vsync. Measure
+        // frame preparation separately so those waits do not inflate CPU work.
+        let cpu_ms = cpu_start.elapsed().as_secs_f64() * 1000.0;
+        {
+            profiling::scope!("wgpu.submit");
+            state.queue.submit(Some(command_buffer));
+        }
+        state.performance.submitted(measured, cpu_ms);
+        {
+            profiling::scope!("wait.present");
+            surface_texture.present();
+        }
 
         // We could have a thread that saves every 30 seconds,
         // but why bother.
         if self.last_save.elapsed().as_secs() > 30 {
+            profiling::scope!("settings.save");
             self.save();
             self.last_save = Instant::now();
         }
@@ -582,6 +646,19 @@ impl ApplicationHandler for App {
         pollster::block_on(self.set_window(window));
     }
 
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            if window.is_minimized() == Some(true) {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else if Instant::now() >= self.next_frame {
+                window.request_redraw();
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame));
+            }
+        }
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
         // let egui render to process the event first
         self.state
@@ -596,11 +673,22 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                let frame_start = Instant::now();
+                if frame_start < self.next_frame { return; }
+                let settings = self.handler.frame_settings();
+                if let Some(state) = self.state.as_mut() {
+                    let mode = settings.present_mode();
+                    if state.surface_config.present_mode != mode {
+                        state.surface_config.present_mode = mode;
+                        state.surface.configure(&state.device, &state.surface_config);
+                    }
+                }
                 self.handle_redraw();
-
-                self.window.as_ref().unwrap().request_redraw();
+                self.next_frame = self.handler.frame_settings().interval()
+                    .map_or(frame_start, |interval| frame_start + interval);
             }
             WindowEvent::Resized(new_size) => {
+                self.next_frame = Instant::now();
                 self.handle_resized(new_size.width, new_size.height);
             }
             WindowEvent::Focused(_) if self.window_background == WindowBackground::Acrylic => {
@@ -622,6 +710,34 @@ impl Drop for App {
 #[cfg(test)]
 mod tests {
     use super::{WindowRect, window_rect_is_visible};
+
+    #[test]
+    fn frame_settings_default_to_vsync_without_a_cap() {
+        let settings = super::FrameSettings::default();
+        assert!(settings.interval().is_none());
+        assert_eq!(settings.present_mode(), egui_wgpu::wgpu::PresentMode::AutoVsync);
+        let restored: super::FrameSettings = ron::from_str("(fps_target:0)").unwrap();
+        assert!(restored.vsync);
+        assert_eq!(restored.fps_target, 0);
+        assert!(restored.interval().is_none());
+    }
+
+    #[test]
+    fn fps_cap_has_a_lower_bound_and_preserves_legacy_settings() {
+        let mut settings = super::FrameSettings { vsync: false, fps_target: 1, fps_limit_enabled: Some(true) };
+        assert_eq!(settings.interval(), Some(std::time::Duration::from_millis(100)));
+        settings.fps_limit_enabled = Some(false);
+        assert!(settings.interval().is_none());
+        let restored: super::FrameSettings = ron::from_str("(fps_target:100)").unwrap();
+        assert_eq!(restored.interval(), Some(std::time::Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn frame_target_and_vsync_are_independent() {
+        let settings = super::FrameSettings { vsync: false, fps_target: 100, fps_limit_enabled: Some(true) };
+        assert_eq!(settings.interval(), Some(std::time::Duration::from_millis(10)));
+        assert_eq!(settings.present_mode(), egui_wgpu::wgpu::PresentMode::AutoNoVsync);
+    }
 
     fn monitor(x: i32, y: i32, width: u32, height: u32) -> WindowRect {
         WindowRect {
