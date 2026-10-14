@@ -153,7 +153,7 @@ impl<'a> Plot<'a> {
             grid_color: self.grid_color,
             label_color: self.label_color,
             zero_line_color: self.zero_line_color,
-            highlight_color: self.highlight_color
+            highlight_color: self.highlight_color,
         };
         let mut occupied_label_rects = Vec::new();
         let content_rect = rect.sub(Margin {

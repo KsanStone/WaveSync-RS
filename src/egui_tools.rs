@@ -83,21 +83,26 @@ impl EguiRenderer {
         };
         {
             profiling::scope!("egui.platform_output");
-            self.state.handle_platform_output(window, full_output.platform_output);
+            self.state
+                .handle_platform_output(window, full_output.platform_output);
         }
         let tris = {
             profiling::scope!("egui.tessellate");
-            self.state.egui_ctx().tessellate(full_output.shapes, self.state.egui_ctx().pixels_per_point())
+            self.state
+                .egui_ctx()
+                .tessellate(full_output.shapes, self.state.egui_ctx().pixels_per_point())
         };
         {
             profiling::scope!("egui.texture_uploads");
             for (id, image_delta) in &full_output.textures_delta.set {
-                self.renderer.update_texture(device, queue, *id, image_delta);
+                self.renderer
+                    .update_texture(device, queue, *id, image_delta);
             }
         }
         {
             profiling::scope!("egui.update_buffers_and_prepare_callbacks");
-            self.renderer.update_buffers(device, queue, encoder, &tris, screen_descriptor);
+            self.renderer
+                .update_buffers(device, queue, encoder, &tris, screen_descriptor);
         }
         profiling::scope!("egui.render_and_paint_callbacks");
         let rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

@@ -30,7 +30,7 @@ async fn run() {
         unsafe { env::set_var("RUST_LOG", "info,wgpu_hal=off") }
     }
     env_logger::init();
-    let _cpu_profiler = cpu_profiler::start();
+    cpu_profiler::start();
     let icon_bytes = include_bytes!("../icon.png");
     let image = image::load_from_memory(icon_bytes)
         .expect("Failed to load icon")

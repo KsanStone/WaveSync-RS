@@ -9,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use winit::event_loop::ControlFlow;
 use winit::application::ApplicationHandler;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::ControlFlow;
 #[cfg(target_os = "windows")]
 use winit::platform::windows::WindowAttributesExtWindows;
 #[cfg(target_os = "windows")]
@@ -173,15 +173,26 @@ pub struct FrameSettings {
     pub fps_limit_enabled: Option<bool>,
 }
 impl Default for FrameSettings {
-    fn default() -> Self { Self { vsync: true, fps_target: 60, fps_limit_enabled: Some(false) } }
+    fn default() -> Self {
+        Self {
+            vsync: true,
+            fps_target: 60,
+            fps_limit_enabled: Some(false),
+        }
+    }
 }
 impl FrameSettings {
     fn interval(self) -> Option<Duration> {
-        self.fps_limit_enabled.unwrap_or(self.fps_target > 0)
+        self.fps_limit_enabled
+            .unwrap_or(self.fps_target > 0)
             .then(|| Duration::from_secs_f64(1.0 / self.fps_target.clamp(10, 1000) as f64))
     }
     fn present_mode(self) -> wgpu::PresentMode {
-        if self.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync }
+        if self.vsync {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        }
     }
 }
 
@@ -419,7 +430,9 @@ impl App {
 
     fn handle_redraw(&mut self) {
         #[cfg(feature = "cpu-profiling")]
-        if profiling::puffin::are_scopes_on() { profiling::finish_frame!(); }
+        if profiling::puffin::are_scopes_on() {
+            profiling::finish_frame!();
+        }
         profiling::scope!("render.frame");
         // Attempt to handle minimizing window
         if let Some(window) = self.window.as_ref()
@@ -674,17 +687,24 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 let frame_start = Instant::now();
-                if frame_start < self.next_frame { return; }
+                if frame_start < self.next_frame {
+                    return;
+                }
                 let settings = self.handler.frame_settings();
                 if let Some(state) = self.state.as_mut() {
                     let mode = settings.present_mode();
                     if state.surface_config.present_mode != mode {
                         state.surface_config.present_mode = mode;
-                        state.surface.configure(&state.device, &state.surface_config);
+                        state
+                            .surface
+                            .configure(&state.device, &state.surface_config);
                     }
                 }
                 self.handle_redraw();
-                self.next_frame = self.handler.frame_settings().interval()
+                self.next_frame = self
+                    .handler
+                    .frame_settings()
+                    .interval()
                     .map_or(frame_start, |interval| frame_start + interval);
             }
             WindowEvent::Resized(new_size) => {
@@ -715,7 +735,10 @@ mod tests {
     fn frame_settings_default_to_vsync_without_a_cap() {
         let settings = super::FrameSettings::default();
         assert!(settings.interval().is_none());
-        assert_eq!(settings.present_mode(), egui_wgpu::wgpu::PresentMode::AutoVsync);
+        assert_eq!(
+            settings.present_mode(),
+            egui_wgpu::wgpu::PresentMode::AutoVsync
+        );
         let restored: super::FrameSettings = ron::from_str("(fps_target:0)").unwrap();
         assert!(restored.vsync);
         assert_eq!(restored.fps_target, 0);
@@ -724,19 +747,39 @@ mod tests {
 
     #[test]
     fn fps_cap_has_a_lower_bound_and_preserves_legacy_settings() {
-        let mut settings = super::FrameSettings { vsync: false, fps_target: 1, fps_limit_enabled: Some(true) };
-        assert_eq!(settings.interval(), Some(std::time::Duration::from_millis(100)));
+        let mut settings = super::FrameSettings {
+            vsync: false,
+            fps_target: 1,
+            fps_limit_enabled: Some(true),
+        };
+        assert_eq!(
+            settings.interval(),
+            Some(std::time::Duration::from_millis(100))
+        );
         settings.fps_limit_enabled = Some(false);
         assert!(settings.interval().is_none());
         let restored: super::FrameSettings = ron::from_str("(fps_target:100)").unwrap();
-        assert_eq!(restored.interval(), Some(std::time::Duration::from_millis(10)));
+        assert_eq!(
+            restored.interval(),
+            Some(std::time::Duration::from_millis(10))
+        );
     }
 
     #[test]
     fn frame_target_and_vsync_are_independent() {
-        let settings = super::FrameSettings { vsync: false, fps_target: 100, fps_limit_enabled: Some(true) };
-        assert_eq!(settings.interval(), Some(std::time::Duration::from_millis(10)));
-        assert_eq!(settings.present_mode(), egui_wgpu::wgpu::PresentMode::AutoNoVsync);
+        let settings = super::FrameSettings {
+            vsync: false,
+            fps_target: 100,
+            fps_limit_enabled: Some(true),
+        };
+        assert_eq!(
+            settings.interval(),
+            Some(std::time::Duration::from_millis(10))
+        );
+        assert_eq!(
+            settings.present_mode(),
+            egui_wgpu::wgpu::PresentMode::AutoNoVsync
+        );
     }
 
     fn monitor(x: i32, y: i32, width: u32, height: u32) -> WindowRect {

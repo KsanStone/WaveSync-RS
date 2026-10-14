@@ -152,26 +152,22 @@ impl Performance {
         false
     }
     pub fn end_gpu(&self, encoder: &mut wgpu::CommandEncoder, measured: bool) {
-        if measured {
-            if let Some(gpu) = &self.gpu {
-                encoder.write_timestamp(&gpu.queries, 1);
-                encoder.resolve_query_set(&gpu.queries, 0..2, &gpu.resolve, 0);
-                encoder.copy_buffer_to_buffer(&gpu.resolve, 0, &gpu.readback, 0, 16);
-            }
+        if measured && let Some(gpu) = &self.gpu {
+            encoder.write_timestamp(&gpu.queries, 1);
+            encoder.resolve_query_set(&gpu.queries, 0..2, &gpu.resolve, 0);
+            encoder.copy_buffer_to_buffer(&gpu.resolve, 0, &gpu.readback, 0, 16);
         }
     }
     pub fn submitted(&mut self, measured: bool, cpu_ms: f64) {
         self.cpu.push(cpu_ms);
-        if measured {
-            if let Some(gpu) = &mut self.gpu {
-                let (tx, rx) = mpsc::channel();
-                gpu.readback
-                    .slice(..)
-                    .map_async(wgpu::MapMode::Read, move |result| {
-                        let _ = tx.send(result);
-                    });
-                gpu.pending = Some(rx);
-            }
+        if measured && let Some(gpu) = &mut self.gpu {
+            let (tx, rx) = mpsc::channel();
+            gpu.readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = tx.send(result);
+                });
+            gpu.pending = Some(rx);
         }
     }
     pub fn snapshot(&self) -> Snapshot {

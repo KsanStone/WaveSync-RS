@@ -70,7 +70,11 @@ impl PolarPlotData {
         self
     }
 
-    pub fn with_radial_lines(mut self, angles: Vec<f32>, override_labels: Option<Vec<String>>) -> Self {
+    pub fn with_radial_lines(
+        mut self,
+        angles: Vec<f32>,
+        override_labels: Option<Vec<String>>,
+    ) -> Self {
         self.radial_lines.line_angles = angles;
         self.radial_lines.override_labels = override_labels;
         self
@@ -182,11 +186,8 @@ impl<'a> PolarPlot<'a> {
         let labels: Vec<_> = label_text
             .iter()
             .map(|text| {
-                ui.painter().layout_no_wrap(
-                    text.clone(),
-                    FontId::monospace(9.0),
-                    self.label_color,
-                )
+                ui.painter()
+                    .layout_no_wrap(text.clone(), FontId::monospace(9.0), self.label_color)
             })
             .collect();
         // Leave room for labels outside the rim, including at the cardinal angles.

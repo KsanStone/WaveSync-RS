@@ -193,7 +193,11 @@ impl Inner {
         };
         // Publish buffer positions while holding the same lock as the samples.
         for channel in 0..fft_channels {
-            let count = if channel == 0 { samples[0].len() } else { samples[channel - 1].len() };
+            let count = if channel == 0 {
+                samples[0].len()
+            } else {
+                samples[channel - 1].len()
+            };
             self.channel_samples_written[channel].fetch_add(count as u64, Ordering::Release);
         }
         self.samples_written
@@ -289,9 +293,20 @@ impl Inner {
         result
     }
 
-    pub fn get_samples_aligned_into(&self, channel: AudioChannel, count: usize, drop: usize, take: usize, result: &mut Vec<f32>) {
+    pub fn get_samples_aligned_into(
+        &self,
+        channel: AudioChannel,
+        count: usize,
+        drop: usize,
+        take: usize,
+        result: &mut Vec<f32>,
+    ) {
         let buffer = &self.audio_buffer.lock().unwrap()[channel.get_index()];
-        let start_idx = buffer.len().saturating_sub(count).saturating_add(drop).min(buffer.len());
+        let start_idx = buffer
+            .len()
+            .saturating_sub(count)
+            .saturating_add(drop)
+            .min(buffer.len());
         let end_idx = start_idx.saturating_add(take).min(buffer.len());
         crate::refill_vec!(*result, buffer.range(start_idx..end_idx).copied());
     }

@@ -456,7 +456,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             let mut fft_data = fft_target.as_slice();
 
             if let Some(smoother) = smoother.as_mut() {
-                fft_data = smoother.smooth_data(delta_t.as_secs_f32(), &fft_target);
+                fft_data = smoother.smooth_data(delta_t.as_secs_f32(), fft_target);
             }
 
             let fft_output_size = fft_data.len();

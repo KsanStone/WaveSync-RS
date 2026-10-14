@@ -100,7 +100,7 @@ impl<'a> Widget for VisualizerWidget<'a> {
                     .set_zero_line_color(self.wavesync_visuals.plot_grid_highlight())
                     .set_highlight_color(self.wavesync_visuals.color_end());
                 plot.show(ui)
-            },
+            }
             PlotData::Polar(radial_plot) => {
                 let plot = PolarPlot::new(&radial_plot)
                     .set_grid_color(self.wavesync_visuals.plot_grid())
