@@ -1,12 +1,10 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
+use crate::ui::aa_line::{AaLines, Segment, Target};
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::vectorscope::egui::Ui;
 use crate::ui::visualizer::visualizer_widget::{PostEquiRender, RenderArgs, Visualizer};
-use crate::ui::{
-    FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, create_pipeline, create_pipeline_color,
-    uniform_bindings, viewport,
-};
+use crate::ui::{FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, create_pipeline, viewport};
 use crate::wavesync::WaveSyncVisuals;
 use crate::{WaveSyncAppData, create_shader, deref_arc, impl_settings};
 use egui;
@@ -35,7 +33,15 @@ pub struct Inner {
     last_written: AtomicU64,
     last_draw: Mutex<Instant>,
     render_resources: Mutex<Option<RenderResources>>,
+    lines: Mutex<VectorscopeLines>,
     uniform_uploads: Mutex<crate::ui::uniform_upload::UniformUploads>,
+}
+
+#[derive(Default)]
+struct VectorscopeLines {
+    left: Vec<f32>,
+    right: Vec<f32>,
+    segments: Vec<Segment>,
 }
 
 impl VectorscopeVisualizer {
@@ -47,6 +53,7 @@ impl VectorscopeVisualizer {
             last_written: Default::default(),
             last_draw: Mutex::new(Instant::now()),
             render_resources: Default::default(),
+            lines: Default::default(),
             uniform_uploads: Default::default(),
         }))
     }
@@ -127,18 +134,15 @@ struct Uniforms {
 }
 
 struct RenderResources {
-    line_pipeline: wgpu::RenderPipeline,
+    line: AaLines,
     blit_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
     intensity_texture: wgpu::Texture,
     intensity_texture_view: wgpu::TextureView,
     quad_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     blit_bind_group: wgpu::BindGroup,
-    line_bind_group: wgpu::BindGroup,
     compute_bind_group: wgpu::BindGroup,
     decay_pipeline: wgpu::ComputePipeline,
-    vertex_instance_buffer: wgpu::Buffer,
     queue: Queue,
 }
 
@@ -147,14 +151,18 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         &self,
         device: &Device,
         queue: &Queue,
-        _screen_descriptor: &ScreenDescriptor,
+        screen_descriptor: &ScreenDescriptor,
         _egui_encoder: &mut CommandEncoder,
         _resources: &mut CallbackResources,
     ) -> Vec<CommandBuffer> {
         profiling::scope!("vectorscope.prepare");
         let mut re_size = false;
-        let width = self.rect.width() as u32;
-        let height = self.rect.height() as u32;
+        let width = (self.rect.width() * screen_descriptor.pixels_per_point)
+            .round()
+            .max(1.0) as u32;
+        let height = (self.rect.height() * screen_descriptor.pixels_per_point)
+            .round()
+            .max(1.0) as u32;
 
         let mut resources = self.visualizer.render_resources.lock().unwrap();
 
@@ -164,27 +172,10 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
         }
 
         if resources.is_none() || re_size {
-            let line_snatch_shader =
-                create_shader!(device, "decay", "../../../shader/vectorscope_lines.wgsl");
-
             let line_blit_shader =
                 create_shader!(device, "lblit", "../../../shader/vectorscope_blit.wgsl");
 
             let decay_shader = create_shader!(device, "decay", "../../../shader/decay.wgsl");
-
-            let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("vectorscope_vertex_buffer"),
-                size: ((MAX_LINE_SEGMENTS * 2) * size_of::<f32>() * 2) as BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
-            let vertex_instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("vectorscope_vertex_instance_buffer"),
-                size: ((MAX_LINE_SEGMENTS * 2) * size_of::<f32>()) as BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
 
             let quad_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("vectorscope_quad_buffer"),
@@ -304,21 +295,11 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                 ],
             });
 
-            let (line_bind_group_layout, line_bind_group) =
-                uniform_bindings(device, 0, &uniform_buffer, "line uniforms");
-
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("vectorscope layout"),
                 bind_group_layouts: &[&bind_group_layout],
                 push_constant_ranges: &[],
             });
-
-            let line_pipeline_layout =
-                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("vectorscope layout 2"),
-                    bind_group_layouts: &[&line_bind_group_layout],
-                    push_constant_ranges: &[],
-                });
 
             let compute_pipeline_layout =
                 device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -338,34 +319,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
 
             *self.visualizer.uniform_uploads.lock().unwrap() = Default::default();
             *resources = Some(RenderResources {
-                line_pipeline: create_pipeline_color(
-                    device,
-                    &line_snatch_shader,
-                    &line_pipeline_layout,
-                    PrimitiveTopology::LineList,
-                    &[
-                        VERTEX_2D_BUFFER_LAYOUT,
-                        wgpu::VertexBufferLayout {
-                            array_stride: size_of::<f32>() as BufferAddress,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &[wgpu::VertexAttribute {
-                                offset: 0,
-                                shader_location: 1,
-                                format: wgpu::VertexFormat::Float32,
-                            }],
-                        },
-                    ],
-                    "vectorscope_line_pipeline",
-                    TextureFormat::R32Float,
-                    wgpu::BlendState {
-                        color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
-                            dst_factor: wgpu::BlendFactor::One,
-                            operation: wgpu::BlendOperation::Add,
-                        },
-                        alpha: wgpu::BlendComponent::REPLACE,
-                    },
-                ),
+                line: AaLines::new(device, MAX_LINE_SEGMENTS, Target::Intensity),
                 blit_pipeline: create_pipeline(
                     device,
                     &line_blit_shader,
@@ -375,15 +329,12 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                     "vectorscope_blit_pipeline",
                 ),
                 decay_pipeline,
-                vertex_buffer,
                 intensity_texture,
                 intensity_texture_view,
                 quad_buffer,
                 uniform_buffer,
                 blit_bind_group,
-                line_bind_group,
                 compute_bind_group,
-                vertex_instance_buffer,
                 queue: queue.clone(),
             })
         }
@@ -477,22 +428,37 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 last_written.store(curr, Ordering::Relaxed);
 
                 let to_read = curr.saturating_sub(last).min(MAX_LINE_SEGMENTS as u64) as usize + 1;
-                let left_data = audio_service.get_samples(AudioChannel::Left, to_read);
-                let right_data = audio_service.get_samples(AudioChannel::Right, to_read);
-
+                let mut lines = self.visualizer.lines.lock().unwrap();
+                let VectorscopeLines {
+                    left: left_data,
+                    right: right_data,
+                    segments,
+                } = &mut *lines;
+                audio_service.get_samples_aligned_into(
+                    AudioChannel::Left,
+                    to_read,
+                    0,
+                    to_read,
+                    left_data,
+                );
+                audio_service.get_samples_aligned_into(
+                    AudioChannel::Right,
+                    to_read,
+                    0,
+                    to_read,
+                    right_data,
+                );
                 if left_data.len() == to_read && right_data.len() == to_read && to_read > 1 {
-                    let mut vertex_data = vec![];
-                    let mut lengths = vec![];
+                    segments.clear();
                     for i in 0..(to_read - 1) {
-                        vertex_data.push([
+                        let start = [
                             plot_data.x_axis.gl_pos(left_data[i]),
-                            plot_data.x_axis.gl_pos(-right_data[i]),
-                        ]);
-                        vertex_data.push([
+                            plot_data.y_axis.gl_pos(-right_data[i]),
+                        ];
+                        let end = [
                             plot_data.x_axis.gl_pos(left_data[i + 1]),
-                            plot_data.x_axis.gl_pos(-right_data[i + 1]),
-                        ]);
-
+                            plot_data.y_axis.gl_pos(-right_data[i + 1]),
+                        ];
                         let x = (left_data[i + 1] - left_data[i]) * self.rect.width();
                         let y = (right_data[i + 1] - right_data[i]) * self.rect.height();
                         let mut dist = (x * x + y * y).sqrt().max(0.05);
@@ -500,34 +466,22 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                             dist = 0.25;
                         }
 
-                        lengths.push(1.0f32 / dist); //vert 1
-                        lengths.push(1.0f32 / dist); //vert 2
+                        if start.iter().chain(end.iter()).all(|v| v.is_finite()) {
+                            segments.push(Segment::independent(start, end, 1.0 / dist));
+                        }
                     }
 
-                    crate::profile_upload!(
-                        "upload.geometry",
-                        "vectorscope.vertex_buffer",
-                        queue.write_buffer(
-                            &resources.vertex_buffer,
-                            0,
-                            bytemuck::cast_slice(&vertex_data),
-                        )
+                    resources.line.upload(queue, &segments);
+                    resources.line.configure(
+                        queue,
+                        &uniform_uploads,
+                        [1.0; 4],
+                        [
+                            resources.intensity_texture.width() as f32,
+                            resources.intensity_texture.height() as f32,
+                        ],
                     );
-                    crate::profile_upload!(
-                        "upload.geometry",
-                        "vectorscope.vertex_instance_buffer",
-                        queue.write_buffer(
-                            &resources.vertex_instance_buffer,
-                            0,
-                            bytemuck::cast_slice(&lengths),
-                        )
-                    );
-
-                    pass.set_pipeline(&resources.line_pipeline);
-                    pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
-                    pass.set_vertex_buffer(1, resources.vertex_instance_buffer.slice(..));
-                    pass.set_bind_group(0, &resources.line_bind_group, &[]);
-                    pass.draw(0..vertex_data.len() as u32, 0..1);
+                    resources.line.draw(&mut pass, segments.len());
                 }
             }
 

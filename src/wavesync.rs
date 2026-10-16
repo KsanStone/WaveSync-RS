@@ -379,10 +379,21 @@ impl AppHandler for WaveSync {
             });
         }
 
+        // Paint a single backdrop across caption and content. Panel frames stay
+        // transparent so their overlay does not get applied twice.
+        let background = if self.visuals.translucent_background() {
+            self.visuals.background_overlay()
+        } else {
+            ctx.style().visuals.panel_fill
+        };
+        ctx.layer_painter(egui::LayerId::background()).rect_filled(
+            ctx.screen_rect(),
+            0.0,
+            background,
+        );
         let mut bottom_panel = egui::TopBottomPanel::bottom("bottom_bar").resizable(false);
         if self.visuals.translucent_background() {
-            bottom_panel =
-                bottom_panel.frame(egui::Frame::default().fill(self.visuals.background_overlay()));
+            bottom_panel = bottom_panel.frame(egui::Frame::default().fill(Color32::TRANSPARENT));
         }
         bottom_panel.show(ctx, |ui| {
             profiling::scope!("ui.bottom_bar");
@@ -462,8 +473,7 @@ impl AppHandler for WaveSync {
 
         let mut central_panel = egui::CentralPanel::default();
         if self.visuals.translucent_background() {
-            central_panel =
-                central_panel.frame(egui::Frame::default().fill(self.visuals.background_overlay()));
+            central_panel = central_panel.frame(egui::Frame::default().fill(Color32::TRANSPARENT));
         }
         central_panel.show(ctx, |ui| {
             profiling::scope!("ui.visualizers_layout");

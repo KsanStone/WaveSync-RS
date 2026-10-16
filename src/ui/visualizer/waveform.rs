@@ -1,8 +1,8 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
+use crate::ui::aa_line::{AaLines, LineScratch, Target};
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
-use crate::ui::{VERTEX_2D_BUFFER_LAYOUT, create_pipeline, uniform_bindings};
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
 use crate::{deref_arc, impl_settings};
 use egui;
@@ -10,10 +10,8 @@ use egui::Ui;
 use egui::epaint::PaintCallbackInfo;
 use egui::{PaintCallback, Rect, Slider};
 use egui_wgpu::wgpu;
-use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use serde::{Deserialize, Serialize};
-use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -38,6 +36,7 @@ struct WaveformScratch {
     uniform_uploads: crate::ui::uniform_upload::UniformUploads,
     samples: Vec<f32>,
     vertices: Vec<[f32; 2]>,
+    line: LineScratch,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -127,30 +126,11 @@ impl WaveformVisualizerCallback {
             color: visuals.wave_color(),
         }
     }
-
-    fn create_vertex_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-        let vertices: [[f32; 2]; MAX_LINE_SEGMENTS] = [[0.0, 0.0]; MAX_LINE_SEGMENTS];
-
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Line Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        })
-    }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    color: [f32; 4],
 }
 
 struct RenderResources {
     queue: wgpu::Queue,
-    vertex_buffer: wgpu::Buffer,
-    uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
-    pipeline: wgpu::RenderPipeline,
+    line: AaLines,
 }
 
 impl CallbackTrait for WaveformVisualizerCallback {
@@ -166,46 +146,11 @@ impl CallbackTrait for WaveformVisualizerCallback {
         let mut resources = self.visualizer.render_resources.lock().unwrap();
 
         if resources.is_none() {
-            let vertex_buffer = WaveformVisualizerCallback::create_vertex_buffer(device);
-
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("line shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../../../shader/colored_line.wgsl").into(),
-                ),
-            });
-
-            let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("waveform_uniform_buffer"),
-                contents: bytemuck::cast_slice(&[Uniforms {
-                    color: [1.0, 0.0, 1.0, 1.0],
-                }]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-            let (bind_group_layout, bind_group) =
-                uniform_bindings(device, 0, &uniform_buffer, "waveform");
-
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("waveform layout"),
-                bind_group_layouts: &[&bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
             self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 queue: queue.clone(),
-                vertex_buffer,
-                uniform_buffer,
-                bind_group,
-                pipeline: create_pipeline(
-                    device,
-                    &shader,
-                    &pipeline_layout,
-                    wgpu::PrimitiveTopology::LineStrip,
-                    &[VERTEX_2D_BUFFER_LAYOUT],
-                    "waveform_pipeline",
-                ),
-            })
+                line: AaLines::new(device, MAX_LINE_SEGMENTS, Target::Color),
+            });
         }
         Vec::new()
     }
@@ -225,14 +170,8 @@ impl CallbackTrait for WaveformVisualizerCallback {
         let resources = self.visualizer.render_resources.lock().unwrap();
         if let Some(resources) = resources.as_ref() {
             let queue = &resources.queue;
-            let buffer = &resources.vertex_buffer;
-            let uniform_buffer = &resources.uniform_buffer;
-            let bind_group = &resources.bind_group;
-            let pipeline = &resources.pipeline;
-
-            let nums = buffer.size() as usize / size_of::<f32>();
-            let half_buffer_size = (nums / 4) as u32; // 2 floats per vertex
-            let buffer_size = half_buffer_size * 2;
+            let half_buffer_size = (MAX_LINE_SEGMENTS / 2) as u32;
+            let buffer_size = MAX_LINE_SEGMENTS as u32;
 
             let to_read = (settings.duration.as_secs_f32() * source.sample_rate as f32) as usize;
             let to_read = floor_to_nearest(to_read, half_buffer_size as usize);
@@ -272,6 +211,7 @@ impl CallbackTrait for WaveformVisualizerCallback {
                 uniform_uploads,
                 samples: latest_samples,
                 vertices,
+                line,
             } = &mut *scratch;
             audio_service.get_samples_aligned_into(
                 channel,
@@ -301,27 +241,19 @@ impl CallbackTrait for WaveformVisualizerCallback {
             }
 
             vertices.truncate(vertices_written as usize);
-            if !vertices.is_empty() {
-                crate::profile_upload!(
-                    "upload.geometry",
-                    "waveform.vertices",
-                    queue.write_buffer(buffer, 0, bytemuck::cast_slice(vertices))
-                );
-            }
-            crate::upload_uniform_if_changed!(
-                *uniform_uploads,
-                "waveform.uniform_buffer",
+            let viewport = [
+                info.viewport.width() * info.pixels_per_point,
+                info.viewport.height() * info.pixels_per_point,
+            ];
+            line.polyline(vertices, viewport);
+            resources.line.upload(queue, &line.segments);
+            resources.line.configure(
                 queue,
-                uniform_buffer,
-                bytemuck::bytes_of(&Uniforms {
-                    color: self.color.to_normalized_gamma_f32(),
-                })
+                uniform_uploads,
+                self.color.to_normalized_gamma_f32(),
+                viewport,
             );
-
-            render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.set_vertex_buffer(0, buffer.slice(..));
-            render_pass.set_pipeline(pipeline);
-            render_pass.draw(0..vertices_written, 0..1);
+            resources.line.draw(render_pass, line.segments.len());
         }
     }
 }

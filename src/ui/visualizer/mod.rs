@@ -16,3 +16,5 @@ pub enum VisualizerType {
 }
 
 mod extended_waveform_cache;
+
+mod waterfall_scroll;

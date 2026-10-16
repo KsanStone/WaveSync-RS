@@ -8,6 +8,8 @@ use std::env;
 use winit::event_loop::EventLoop;
 
 pub mod app;
+#[cfg(target_os = "windows")]
+mod window_frame;
 mod cpu_profiler;
 pub mod egui_tools;
 pub mod media;

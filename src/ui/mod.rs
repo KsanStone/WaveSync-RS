@@ -10,6 +10,7 @@ pub mod plot;
 pub(crate) mod uniform_upload;
 pub(crate) mod vec_cache;
 pub mod visualizer;
+pub(crate) mod aa_line;
 
 #[macro_export]
 macro_rules! deref_arc {

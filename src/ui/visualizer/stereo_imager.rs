@@ -1,3 +1,4 @@
+use crate::ui::aa_line::{AaLines, LineScratch, Target};
 use crate::{
     deref_arc, impl_settings,
     sound::{
@@ -56,6 +57,7 @@ struct StereoScratch {
     left: Vec<f32>,
     right: Vec<f32>,
     vertices: Vec<[f32; 2]>,
+    line: LineScratch,
     fill_vertices: Vec<[f32; 2]>,
 }
 
@@ -74,13 +76,10 @@ impl Default for StereoImagerVisualizerSettings {
 
 struct RenderResources {
     queue: wgpu::Queue,
-    line_vertex_buffer: wgpu::Buffer,
+    line: AaLines,
     fill_vertex_buffer: wgpu::Buffer,
-    line_uniform_buffer: wgpu::Buffer,
     fill_uniform_buffer: wgpu::Buffer,
-    line_bind_group: wgpu::BindGroup,
     fill_bind_group: wgpu::BindGroup,
-    line_pipeline: wgpu::RenderPipeline,
     fill_pipeline: wgpu::RenderPipeline,
 }
 
@@ -163,12 +162,6 @@ struct StereoImagerVisualizerCallback {
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    color: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct FillUniforms {
     end_color: [f32; 4],
     start_color: [f32; 4],
@@ -190,25 +183,11 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
         let mut resources = self.visualizer.render_resources.lock().unwrap();
 
         if resources.is_none() {
-            let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("stereo_imager_vertex_buffer"),
-                size: ((DIRECTION_BINS * 2) * size_of::<f32>() * 2) as BufferAddress,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-
             let fill_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("stereo_imager_fill_buffer"),
                 size: ((DIRECTION_BINS * 3) * size_of::<f32>() * 2) as BufferAddress,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            });
-
-            let line_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("line shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../../../shader/colored_line.wgsl").into(),
-                ),
             });
 
             let grad_fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -217,15 +196,6 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                     include_str!("../../../shader/radial_gradient_fill.wgsl").into(),
                 ),
             });
-
-            let line_uniform_buffer =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("waveform_uniform_buffer"),
-                    contents: bytemuck::cast_slice(&[Uniforms {
-                        color: [1.0, 0.0, 1.0, 1.0],
-                    }]),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
 
             let fill_uniform_buffer =
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -240,18 +210,8 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 });
 
-            let (line_bind_group_layout, line_bind_group) =
-                uniform_bindings(device, 0, &line_uniform_buffer, "waveform");
-
             let (fill_bind_group_layout, fill_bind_group) =
                 uniform_bindings(device, 0, &fill_uniform_buffer, "waveform");
-
-            let line_pipeline_layout =
-                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: Some("stereoimager line layout"),
-                    bind_group_layouts: &[&line_bind_group_layout],
-                    push_constant_ranges: &[],
-                });
 
             let fill_pipeline_layout =
                 device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -263,20 +223,10 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 queue: queue.clone(),
-                line_vertex_buffer: vertex_buffer,
+                line: AaLines::new(device, DIRECTION_BINS * 2, Target::Color),
                 fill_vertex_buffer: fill_buffer,
-                line_uniform_buffer,
                 fill_uniform_buffer,
-                line_bind_group,
                 fill_bind_group,
-                line_pipeline: create_pipeline(
-                    device,
-                    &line_shader,
-                    &line_pipeline_layout,
-                    wgpu::PrimitiveTopology::LineStrip,
-                    &[VERTEX_2D_BUFFER_LAYOUT],
-                    "stereo_imager_pipeline",
-                ),
                 fill_pipeline: create_pipeline(
                     device,
                     &grad_fill_shader,
@@ -293,7 +243,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
 
     fn paint(
         &self,
-        _info: PaintCallbackInfo,
+        info: PaintCallbackInfo,
         render_pass: &mut egui_wgpu::wgpu::RenderPass<'static>,
         _callback_resources: &egui_wgpu::CallbackResources,
     ) {
@@ -304,11 +254,6 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             let last_written = self.visualizer.last_written.load(Ordering::Relaxed);
             let written = self.visualizer.audio_service.get_samples_written();
             let queue = &resources.queue;
-            let buffer = &resources.line_vertex_buffer;
-            let uniform_buffer = &resources.line_uniform_buffer;
-            let bind_group = &resources.line_bind_group;
-            let pipeline = &resources.line_pipeline;
-
             let to_read = written
                 .saturating_sub(last_written)
                 .min(MAX_SAMPLES_TO_READ_PER_FRAME as u64);
@@ -326,6 +271,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 left: l_samples,
                 right: r_samples,
                 vertices,
+                line,
                 fill_vertices: tri_vertices,
             } = &mut *scratch;
             self.visualizer.audio_service.get_samples_aligned_into(
@@ -483,26 +429,19 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             render_pass.set_pipeline(&resources.fill_pipeline);
             render_pass.draw(0..tri_vertices.len() as u32, 0..1);
 
-            // Draw the bins as a polar line plot.
-            crate::profile_upload!(
-                "upload.geometry",
-                "stereo_imager.line_vertices",
-                queue.write_buffer(buffer, 0, bytemuck::cast_slice(vertices))
-            );
-            crate::upload_uniform_if_changed!(
-                *uniform_uploads,
-                "stereo_imager.uniform_buffer",
+            let viewport = [
+                info.viewport.width() * info.pixels_per_point,
+                info.viewport.height() * info.pixels_per_point,
+            ];
+            line.polyline(vertices, viewport);
+            resources.line.upload(queue, &line.segments);
+            resources.line.configure(
                 queue,
-                uniform_buffer,
-                bytemuck::bytes_of(&Uniforms {
-                    color: self.color_end.to_normalized_gamma_f32(),
-                })
+                uniform_uploads,
+                self.color_end.to_normalized_gamma_f32(),
+                viewport,
             );
-
-            render_pass.set_bind_group(0, bind_group, &[]);
-            render_pass.set_vertex_buffer(0, buffer.slice(..));
-            render_pass.set_pipeline(pipeline);
-            render_pass.draw(0..DIRECTION_BINS as u32 * 2, 0..1);
+            resources.line.draw(render_pass, line.segments.len());
         }
     }
 }

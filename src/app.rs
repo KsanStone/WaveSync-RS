@@ -72,15 +72,11 @@ impl WindowBackground {
 
         // A negative margin tells DWM to paint its backdrop through the whole client area,
         // not only the title bar.
-        let margins = if self.is_translucent() {
-            MARGINS {
-                cxLeftWidth: -1,
-                cxRightWidth: -1,
-                cyTopHeight: -1,
-                cyBottomHeight: -1,
-            }
-        } else {
-            MARGINS::default()
+        let margins = MARGINS {
+            cxLeftWidth: -1,
+            cxRightWidth: -1,
+            cyTopHeight: -1,
+            cyBottomHeight: -1,
         };
         if let Err(error) =
             unsafe { DwmExtendFrameIntoClientArea(HWND(handle.hwnd.get() as _), &margins) }
@@ -401,6 +397,8 @@ impl App {
     async fn set_window(&mut self, window: Window) {
         let window = Arc::new(window);
 
+        #[cfg(target_os = "windows")]
+        crate::window_frame::install(&window);
         let initial_width = window.inner_size().width;
         let initial_height = window.inner_size().height;
 
@@ -418,6 +416,22 @@ impl App {
         )
         .await;
 
+        #[cfg(target_os = "windows")]
+        {
+            let ctx = state.egui_renderer.context();
+            let icon = ctx.load_texture(
+                "window_caption_icon",
+                egui::ColorImage::from_rgba_unmultiplied(
+                    [
+                        self.icon_data.width as usize,
+                        self.icon_data.height as usize,
+                    ],
+                    &self.icon_data.rgba,
+                ),
+                egui::TextureOptions::LINEAR,
+            );
+            ctx.data_mut(|data| data.insert_temp(egui::Id::new("window_caption_icon"), icon));
+        }
         self.window.get_or_insert(window);
         self.state.get_or_insert(state);
     }
@@ -442,8 +456,15 @@ impl App {
             return;
         }
 
+        let window = self.window.as_ref().unwrap();
+        let size = window.inner_size();
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
         let state = self.state.as_mut().unwrap();
-
+        if state.surface_config.width != size.width || state.surface_config.height != size.height {
+            state.resize_surface(size.width, size.height);
+        }
         let screen_descriptor = ScreenDescriptor {
             size_in_pixels: [state.surface_config.width, state.surface_config.height],
             pixels_per_point: self.window.as_ref().unwrap().scale_factor() as f32
@@ -507,10 +528,13 @@ impl App {
         {
             {
                 profiling::scope!("egui.begin_frame");
+                state.egui_renderer.ppp(screen_descriptor.pixels_per_point);
                 state.egui_renderer.begin_frame(window);
             }
 
             let ctx = state.egui_renderer.context();
+            #[cfg(target_os = "windows")]
+            crate::window_frame::titlebar(ctx, window);
             self.handler.update(ctx);
 
             let requested_background = self.handler.window_background();
@@ -706,6 +730,10 @@ impl ApplicationHandler for App {
                     .frame_settings()
                     .interval()
                     .map_or(frame_start, |interval| frame_start + interval);
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.next_frame = Instant::now();
+                self.window.as_ref().unwrap().request_redraw();
             }
             WindowEvent::Resized(new_size) => {
                 self.next_frame = Instant::now();

@@ -19,7 +19,7 @@ use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 use wgpu::{
     BindingResource, BufferAddress, BufferBindingType, CommandBuffer, CommandEncoder, Device,
@@ -34,7 +34,8 @@ const GRADIENT_LOOKUP_LENGTH: u32 = 1024;
 const MAX_RESOLUTION: usize = 8192;
 /// How many fft results we can cache before we next send them to the gpu
 /// if we run out of space, oh well.
-const TEMP_FFT_SIZE: usize = 8;
+const TEMP_FFT_SIZE: usize = 64;
+const GUARD_ROWS: usize = 4;
 
 deref_arc!(SpectrogramVisualizer);
 
@@ -69,6 +70,8 @@ struct SpectrogramScratch {
     uniform_uploads: crate::ui::uniform_upload::UniformUploads,
     mapping: crate::ui::vec_cache::CachedVec<SpectrogramMappingKey, i32>,
     due_to_send: Vec<Vec<f32>>,
+    scroll: super::waterfall_scroll::WaterfallScroll,
+    last_paint: Option<Instant>,
 }
 
 impl SpectrogramVisualizer {
@@ -136,20 +139,19 @@ impl Visualizer for SpectrogramVisualizer {
         }
     }
 
-    fn accept_fft(&self, fft_data: &[Vec<f32>; CHANNELS], fft_size: usize) {
+    fn accept_fft(&self, fft_data: &[Vec<f32>; CHANNELS], _fft_size: usize) {
         if fft_data.len() <= self.channel.get_index() {
             return;
         }
 
         let mut buffer = self.fft_send_buffer.lock().unwrap();
-        if self.fft_buffer_size.load(Ordering::Relaxed) != fft_size {
-            buffer.clear();
-            // We update the fft size later
-            // As of rn it'll be an indicator that it has changed when
-            // the Vec<f32>'s size doesn't match the fft size.
-        }
-
-        buffer.push_back(fft_data.get(self.channel.get_index()).unwrap().clone());
+        let values = &fft_data[self.channel.get_index()];
+        enqueue_fft_row(
+            &mut buffer,
+            &self.fft_buffer_size,
+            &self.do_resize_buffers,
+            values,
+        );
     }
 
     fn error_message(&self) -> Option<String> {
@@ -232,7 +234,7 @@ pub struct Uniforms {
     pub head_offset: i32,
     pub buffer_size: i32,
     pub is_vertical: i32,
-    pub _padding: i32,
+    pub scroll_offset: f32,
 }
 
 impl CallbackTrait for SpectrogramVisualizerCallback {
@@ -247,17 +249,21 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         profiling::scope!("spectrogram.prepare");
         let mut resources = self.visualizer.rendering_resources.lock().unwrap();
 
-        if resources.is_none()
-            || self
-                .visualizer
-                .do_resize_buffers
-                .compare_exchange(true, false, Ordering::Acquire, Ordering::Acquire)
-                .is_ok()
-        {
+        let resize = self
+            .visualizer
+            .do_resize_buffers
+            .swap(false, Ordering::AcqRel);
+        if resources.is_none() || resize {
             // In case we are re-creating the pipeline (fft-size changed)
             // we'll need to re-fill the gradient texture.
             self.visualizer.current_gradient.lock().unwrap().take();
-            self.visualizer.scratch.lock().unwrap().mapping.invalidate();
+            {
+                let mut scratch = self.visualizer.scratch.lock().unwrap();
+                scratch.mapping.invalidate();
+                scratch.scroll = Default::default();
+                scratch.last_paint = None;
+            }
+            self.visualizer.head_offset.store(0, Ordering::Release);
             let buff_length =
                 compute_buffer_length(&self.visualizer.data, &self.visualizer.audio_service);
             self.visualizer
@@ -282,7 +288,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
 
             let pos_mapping_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("pos_mapping_buffer"),
-                size: (MAX_RESOLUTION * size_of::<i32>()) as BufferAddress,
+                size: ((MAX_RESOLUTION + 1) * size_of::<i32>()) as BufferAddress,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -398,6 +404,8 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 uniform_uploads,
                 mapping,
                 due_to_send,
+                scroll,
+                last_paint,
             } = &mut *scratch;
             due_to_send.clear();
             while let Some(x) = send_buffer.pop_front() {
@@ -406,27 +414,35 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             drop(send_buffer); // Do not block the buffer,
             // thus allowing the audio thread to run cleanly.
 
+            let viewport_width = (info.viewport.width() * info.pixels_per_point)
+                .round()
+                .max(1.0) as usize;
+            let viewport_height = (info.viewport.height() * info.pixels_per_point)
+                .round()
+                .max(1.0) as usize;
             let (frequency_axis_spectrogram_width, frequency_axis, db_axis) =
                 if settings.is_vertical {
-                    (info.viewport.width(), &plot_data.x_axis, &plot_data.y_axis)
+                    (viewport_width as f32, &plot_data.x_axis, &plot_data.y_axis)
                 } else {
-                    (info.viewport.height(), &plot_data.y_axis, &plot_data.x_axis)
+                    (viewport_height as f32, &plot_data.y_axis, &plot_data.x_axis)
                 };
 
             let fft_buffer_length = self.visualizer.fft_buffer_length.load(Ordering::Acquire);
 
             let mut head = self.visualizer.head_offset.load(Ordering::Relaxed);
+            let mut uploaded_rows = 0;
             for mut buf in due_to_send.drain(..) {
                 if buf.is_empty() {
                     continue;
                 }
 
-                head = self.visualizer.move_head(fft_buffer_length as u32);
                 buf.iter_mut()
                     .for_each(|x| *x = db_axis.norm_pos(scale_to_db(*x)));
 
-                if buf.len() == self.visualizer.fft_buffer_size.load(Ordering::Acquire) {
+                if buf.len() == resources.storage_texture.width() as usize * 4 {
+                    head = self.visualizer.move_head(fft_buffer_length as u32);
                     write_2d_texture_row(queue, &resources.storage_texture, &buf, head);
+                    uploaded_rows += 1;
                 } else {
                     self.visualizer
                         .fft_buffer_size
@@ -440,18 +456,27 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 }
             }
 
+            let now = Instant::now();
+            let dt = last_paint
+                .replace(now)
+                .map_or(0.0, |previous| now.duration_since(previous).as_secs_f64());
+            let scroll_offset = scroll.advance(
+                uploaded_rows,
+                dt,
+                self.visualizer.audio_service.get_fft_rate() as f64,
+            );
             crate::upload_uniform_if_changed!(
                 *uniform_uploads,
                 "spectrogram.uniform_buffer",
                 queue,
                 &resources.uniform_buffer,
                 bytemuck::cast_slice(&[Uniforms {
-                    width: info.viewport.width() as i32,
-                    height: info.viewport.height() as i32,
+                    width: viewport_width as i32,
+                    height: viewport_height as i32,
                     head_offset: head as i32,
                     buffer_size: fft_buffer_length as i32,
                     is_vertical: settings.is_vertical as i32,
-                    _padding: 0,
+                    scroll_offset,
                 }])
             );
 
@@ -466,10 +491,12 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 profiling::scope!("spectrogram.mapping_cache");
                 mapping.update(
                     key,
-                    (frequency_axis_spectrogram_width as usize).min(MAX_RESOLUTION),
+                    (frequency_axis_spectrogram_width as usize).min(MAX_RESOLUTION) + 1,
                     |i| {
+                        let count = (frequency_axis_spectrogram_width as usize).min(MAX_RESOLUTION);
                         let freq = frequency_axis.norm_pos_to_val(
-                            i as f32 / (frequency_axis_spectrogram_width - 1.0).max(1.0),
+                            i.min(count.saturating_sub(1)) as f32
+                                / count.saturating_sub(1).max(1) as f32,
                         );
                         source.bin_of_frequency(freq, fft_size) as i32
                     },
@@ -502,5 +529,45 @@ fn compute_buffer_length(
     let settings = &data.read().unwrap().spectrogram_settings;
     let fft_rate = audio_service.get_fft_rate();
     let shown_duration = settings.shown_duration;
-    (shown_duration.as_secs_f32() * fft_rate as f32) as usize
+    ((shown_duration.as_secs_f64() * fft_rate as f64).ceil() as usize).clamp(2, 2048 - GUARD_ROWS)
+        + GUARD_ROWS
+}
+
+// Compare magnitude counts with magnitude counts, not full transform sizes.
+fn enqueue_fft_row(
+    buffer: &mut CircularBuffer<TEMP_FFT_SIZE, Vec<f32>>,
+    size: &AtomicUsize,
+    resize: &AtomicBool,
+    values: &[f32],
+) {
+    if values.is_empty() {
+        return;
+    }
+    if size.swap(values.len(), Ordering::AcqRel) != values.len() {
+        buffer.clear();
+        resize.store(true, Ordering::Release);
+    }
+    buffer.push_back(values.to_vec());
+}
+
+#[cfg(test)]
+mod fft_queue_tests {
+    use super::*;
+    #[test]
+    fn batched_fft_rows_survive_until_render_and_size_changes_flush_old_rows() {
+        let mut queue = CircularBuffer::new();
+        let size = AtomicUsize::new(4);
+        let resize = AtomicBool::new(false);
+        for value in 0..3 {
+            enqueue_fft_row(&mut queue, &size, &resize, &[value as f32; 4]);
+        }
+        assert_eq!(queue.len(), 3);
+        assert!(!resize.load(Ordering::Acquire));
+        assert_eq!(queue.front().unwrap(), &vec![0.0; 4]);
+        enqueue_fft_row(&mut queue, &size, &resize, &[4.0; 2]);
+        assert_eq!(queue.len(), 1);
+        assert!(resize.load(Ordering::Acquire));
+        enqueue_fft_row(&mut queue, &size, &resize, &[5.0; 2]);
+        assert_eq!(queue.len(), 2);
+    }
 }
