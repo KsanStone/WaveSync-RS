@@ -51,7 +51,7 @@ pub struct WaveSync {
     media_texture: Option<(u64, egui::TextureHandle)>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct WaveSyncAppData {
     pub waveform_settings: WaveformSettings,
     pub spectrum_settings: SpectrumVisualizerSettings,
@@ -66,6 +66,25 @@ pub struct WaveSyncAppData {
     pub window_background: WindowBackground,
     #[serde(default)]
     pub frame_settings: FrameSettings,
+}
+
+impl Default for WaveSyncAppData {
+    fn default() -> Self {
+        Self {
+            waveform_settings: WaveformSettings::default(),
+            spectrum_settings: SpectrumVisualizerSettings::default(),
+            extended_waveform_settings: ExtendedWaveformVisualizerSettings::default(),
+            spectrogram_settings: SpectrogramSettings::default(),
+            vectorscope_settings: VectorscopeSettings::default(),
+            stereo_imager_settings: StereoImagerVisualizerSettings::default(),
+            fft_rate: 60,
+            fft_size: 32768,
+            theme_name: "Frappe".into(),
+            audio_device_name: None,
+            window_background: WindowBackground::Acrylic,
+            frame_settings: FrameSettings::default(),
+        }
+    }
 }
 
 pub struct WaveSyncVisuals {

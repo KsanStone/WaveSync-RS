@@ -15,6 +15,14 @@ pub(crate) struct Segment {
     padding: [u32; 2],
 }
 impl Segment {
+    /// Deposit a fixed amount of light, independent of segment length and caps.
+    /// For a one-pixel stroke, the triangular AA kernel integrates to `length`
+    /// along the shaft and pi/3 across the two round end caps combined.
+    pub fn with_energy(start: [f32; 2], end: [f32; 2], energy: f32, viewport: [f32; 2]) -> Self {
+        let length = ((end[0] - start[0]) * viewport[0] * 0.5)
+            .hypot((end[1] - start[1]) * viewport[1] * 0.5);
+        Self::independent(start, end, energy / (length + std::f32::consts::PI / 3.0))
+    }
     pub fn independent(start: [f32; 2], end: [f32; 2], weight: f32) -> Self {
         Self {
             start,
@@ -263,6 +271,16 @@ mod tests {
                 .iter()
                 .all(|s| s.start_normal.iter().all(|v| v.is_finite()))
         );
+    }
+    #[test]
+    fn fixed_energy_accounts_for_length_and_round_caps() {
+        for length in [0.0, 0.1, 1.0, 100.0] {
+            let segment =
+                Segment::with_energy([0.0, 0.0], [length / 100.0, 0.0], 0.5, [200.0, 200.0]);
+            let area = length + std::f32::consts::PI / 3.0;
+            assert!((segment.weight * area - 0.5).abs() < 1e-6);
+            assert!(segment.weight.is_finite());
+        }
     }
     #[test]
     fn shader_parses_and_validates() {

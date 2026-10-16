@@ -3,6 +3,7 @@ use crate::sound::smoothing::FloatArraySmoother;
 use crate::sound::smoothing::exponential_falloff_smoother::ExponentialFalloffSmoother;
 use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
 use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
+use crate::ui::aa_line::{AaLines, LineScratch, Target};
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
@@ -26,6 +27,19 @@ use std::time::Instant;
 pub const MAX_BARS: u64 = 4096;
 pub const MIN_BAR_WIDTH: f32 = 1.0;
 pub const MIN_SMOOTHED_WIDTH: f32 = 4.0;
+
+/// The spline smooths a contiguous prefix, stopping at the first narrow bucket.
+/// Return its last source endpoint, additionally requiring >2 physical pixels.
+fn smoothed_outline_end(points: &[[f32; 2]], width: f32, pixels_per_point: f32) -> Option<f32> {
+    points
+        .windows(2)
+        .take_while(|pair| {
+            let bucket_width = (pair[1][0] - pair[0][0]).abs() * width * 0.5;
+            bucket_width >= MIN_SMOOTHED_WIDTH && bucket_width * pixels_per_point > 2.0
+        })
+        .last()
+        .map(|pair| pair[1][0])
+}
 
 deref_arc!(SpectrumVisualizer);
 
@@ -60,6 +74,7 @@ struct SpectrumScratch {
     instances: Vec<BarInstanceData>,
     spline_padding: Vec<[f32; 2]>,
     spline_output: Vec<[f32; 2]>,
+    outline: LineScratch,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -76,7 +91,7 @@ pub struct SpectrumVisualizerSettings {
 impl Default for SpectrumVisualizerSettings {
     fn default() -> Self {
         Self {
-            draw_type: SpectrumVisualizerType::Bar,
+            draw_type: SpectrumVisualizerType::Line,
             smoother_type: SmootherType::Multiplicative,
             smoother_factor: 0.7,
             frequency_axis_logarithmic: true,
@@ -238,6 +253,7 @@ struct RenderResources {
     bars_pipeline: wgpu::RenderPipeline,
     line_pipeline: wgpu::RenderPipeline,
     line_fill_pipeline: wgpu::RenderPipeline,
+    outline: AaLines,
     vertex_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
@@ -317,6 +333,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
             *resources = Some(RenderResources {
+                outline: AaLines::new(device, MAX_BARS as usize * 8, Target::Color),
                 bars_pipeline: create_pipeline(
                     device,
                     &bar_shader,
@@ -449,6 +466,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 instances: instance_data,
                 spline_padding,
                 spline_output,
+                outline,
             } = &mut *scratch;
             self.visualizer
                 .audio_service
@@ -555,6 +573,17 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             if settings.draw_type == SpectrumVisualizerType::Line {
                 let px_width = 2.0 / info.viewport.width();
+                // Classify source buckets BEFORE spline subdivision. Subdivided
+                // curve segments are tiny even when the source bucket is wide.
+                let aa_end = if settings.smooth_line {
+                    smoothed_outline_end(
+                        position_data,
+                        info.viewport.width(),
+                        info.pixels_per_point,
+                    )
+                } else {
+                    None
+                };
                 if settings.smooth_line {
                     catmull_rom_spline_into(
                         position_data,
@@ -589,9 +618,38 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.set_pipeline(&resources.line_fill_pipeline);
                 render_pass.draw(0..6u32, 0..(count - 1));
 
-                render_pass.set_vertex_buffer(0, resources.instance_buffer.slice(..));
-                render_pass.set_pipeline(&resources.line_pipeline);
-                render_pass.draw(0..(count - 1) * 2u32, 0..1);
+                let segment_count = count.saturating_sub(1) as usize;
+                let aa_count = aa_end.map_or(0, |end| {
+                    position_data
+                        .partition_point(|p| p[0] <= end)
+                        .saturating_sub(1)
+                        .min(segment_count)
+                });
+                // Share the exact endpoint between the AA prefix and dense,
+                // native one-pixel tail. The fill uses the unchanged full buffer.
+                if aa_count < segment_count {
+                    let offset = (aa_count * 2 * size_of::<[f32; 2]>()) as u64;
+                    render_pass.set_vertex_buffer(0, resources.instance_buffer.slice(offset..));
+                    render_pass.set_pipeline(&resources.line_pipeline);
+                    render_pass.draw(0..((segment_count - aa_count) * 2) as u32, 0..1);
+                }
+                if aa_count > 0 {
+                    let viewport = [
+                        info.viewport.width() * info.pixels_per_point,
+                        info.viewport.height() * info.pixels_per_point,
+                    ];
+                    outline.polyline(&position_data[..=aa_count], viewport);
+                    resources
+                        .outline
+                        .upload(&resources.queue, &outline.segments);
+                    resources.outline.configure(
+                        &resources.queue,
+                        uniform_uploads,
+                        self.color_end.to_normalized_gamma_f32(),
+                        viewport,
+                    );
+                    resources.outline.draw(render_pass, outline.segments.len());
+                }
             } else {
                 crate::refill_vec!(
                     *instance_data,
@@ -618,5 +676,24 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.draw(0..6u32, 0..count);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::*;
+    #[test]
+    fn aa_stops_where_source_buckets_stop_being_smoothed() {
+        let points = [
+            [-1.0, 0.0],
+            [-0.5, 0.0],
+            [-0.4, 0.0],
+            [-0.39, 0.0],
+            [1.0, 0.0],
+        ];
+        assert_eq!(smoothed_outline_end(&points, 100.0, 1.0), Some(-0.4));
+        assert_eq!(smoothed_outline_end(&points, 10.0, 1.0), None);
+        assert_eq!(smoothed_outline_end(&points, 100.0, 0.1), Some(-0.5));
+        assert_eq!(smoothed_outline_end(&[], 100.0, 1.0), None);
     }
 }

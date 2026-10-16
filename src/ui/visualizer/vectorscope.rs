@@ -1,3 +1,4 @@
+use super::vectorscope_bloom::Bloom;
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
 use crate::ui::aa_line::{AaLines, Segment, Target};
@@ -23,6 +24,23 @@ use wgpu::{
 };
 
 const MAX_LINE_SEGMENTS: usize = 4096;
+const REFERENCE_SAMPLE_RATE: f32 = 48_000.0;
+const REFERENCE_ENERGY: f32 = 0.5;
+
+/// Preserve deposited energy when the per-frame geometry budget drops old samples.
+/// Account for their age as well, so lowering the frame rate does not raise exposure.
+fn retained_sample_compensation(
+    total: usize,
+    retained: usize,
+    sample_rate: f32,
+    lambda: f32,
+) -> f32 {
+    if retained == 0 || total <= retained {
+        return 1.0;
+    }
+    let time_step = lambda / sample_rate.max(1.0);
+    (-time_step * total as f32).exp_m1() / (-time_step * retained as f32).exp_m1()
+}
 
 deref_arc!(VectorscopeVisualizer);
 
@@ -46,11 +64,12 @@ struct VectorscopeLines {
 
 impl VectorscopeVisualizer {
     pub fn new(audio_service: AudioService, data: Arc<RwLock<WaveSyncAppData>>) -> Self {
+        let initial_written = audio_service.get_samples_written();
         Self(Arc::new(Inner {
             audio_service,
             settings_open: Default::default(),
             data,
-            last_written: Default::default(),
+            last_written: AtomicU64::new(initial_written),
             last_draw: Mutex::new(Instant::now()),
             render_resources: Default::default(),
             lines: Default::default(),
@@ -102,19 +121,39 @@ impl Visualizer for VectorscopeVisualizer {
         let settings = &mut this.data.write().unwrap().vectorscope_settings;
         ui.horizontal(|ui| {
             ui.label("Range");
-            ui.add(Slider::new(&mut settings.range, 0.1..=3.0));
-        })
+            ui.add(Slider::new(&mut settings.range, 0.1..=2.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Brightness");
+            ui.add(Slider::new(&mut settings.brightness, 1.0..=100.0).logarithmic(true));
+        });
+        ui.checkbox(&mut settings.bleed_enabled, "Bloom");
+        ui.add_enabled_ui(settings.bleed_enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Bloom strength");
+                ui.add(Slider::new(&mut settings.bleed, 0.0..=1.0));
+            });
+        });
     });
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(default)]
 pub struct VectorscopeSettings {
     pub range: f32,
+    pub brightness: f32,
+    pub bleed: f32,
+    pub bleed_enabled: bool,
 }
 
 impl Default for VectorscopeSettings {
     fn default() -> Self {
-        Self { range: 1.0 }
+        Self {
+            range: 1.0,
+            brightness: 10.0,
+            bleed: 0.05,
+            bleed_enabled: true,
+        }
     }
 }
 
@@ -130,11 +169,13 @@ struct Uniforms {
     fill_color: [f32; 4],
     decay_factor: f32,
     write_factor: f32,
-    _padding: u64,
+    bleed_strength: f32,
+    _padding: f32,
 }
 
 struct RenderResources {
     line: AaLines,
+    bloom: Bloom,
     blit_pipeline: wgpu::RenderPipeline,
     intensity_texture: wgpu::Texture,
     intensity_texture_view: wgpu::TextureView,
@@ -211,6 +252,8 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
             let intensity_texture_view =
                 intensity_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+            let bloom = Bloom::new(device, &intensity_texture_view, width, height);
+
             let bind_group_layout =
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     entries: &[
@@ -234,6 +277,22 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                             },
                             count: None,
                         },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
                     ],
                     label: Some("vectorscope_storage_texture_layout"),
                 });
@@ -249,6 +308,14 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&bloom.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&bloom.sampler),
                     },
                 ],
             });
@@ -320,6 +387,7 @@ impl CallbackTrait for VectorscopeVisualizerCallback {
             *self.visualizer.uniform_uploads.lock().unwrap() = Default::default();
             *resources = Some(RenderResources {
                 line: AaLines::new(device, MAX_LINE_SEGMENTS, Target::Intensity),
+                bloom,
                 blit_pipeline: create_pipeline(
                     device,
                     &line_blit_shader,
@@ -371,6 +439,14 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
             let lambda = -decay.ln() * 60.0;
             let decay_factor = (-lambda * delta_t).exp();
 
+            let settings = self
+                .visualizer
+                .data
+                .read()
+                .unwrap()
+                .vectorscope_settings
+                .clone();
+            let sample_rate = audio_service.get_source().sample_rate.max(1) as f32;
             let uniform_uploads = self.visualizer.uniform_uploads.lock().unwrap();
             crate::upload_uniform_if_changed!(
                 *uniform_uploads,
@@ -381,7 +457,12 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                     fill_color: self.color.to_normalized_gamma_f32(),
                     decay_factor,
                     write_factor: 1.0,
-                    _padding: 0,
+                    bleed_strength: if settings.bleed_enabled {
+                        settings.bleed
+                    } else {
+                        0.0
+                    },
+                    _padding: 0.0,
                 })
             );
 
@@ -427,7 +508,17 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 let curr = audio_service.get_samples_written();
                 last_written.store(curr, Ordering::Relaxed);
 
-                let to_read = curr.saturating_sub(last).min(MAX_LINE_SEGMENTS as u64) as usize + 1;
+                // Never turn reopening a hidden scope into an enormous flash.
+                let new_samples = curr.saturating_sub(last).min(sample_rate as u64) as usize;
+                let retained = new_samples.min(MAX_LINE_SEGMENTS);
+                let to_read = retained + 1;
+                let exposure = REFERENCE_ENERGY * REFERENCE_SAMPLE_RATE / sample_rate
+                    * settings.brightness
+                    * retained_sample_compensation(new_samples, retained, sample_rate, lambda);
+                let viewport = [
+                    resources.intensity_texture.width() as f32,
+                    resources.intensity_texture.height() as f32,
+                ];
                 let mut lines = self.visualizer.lines.lock().unwrap();
                 let VectorscopeLines {
                     left: left_data,
@@ -459,15 +550,10 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                             plot_data.x_axis.gl_pos(left_data[i + 1]),
                             plot_data.y_axis.gl_pos(-right_data[i + 1]),
                         ];
-                        let x = (left_data[i + 1] - left_data[i]) * self.rect.width();
-                        let y = (right_data[i + 1] - right_data[i]) * self.rect.height();
-                        let mut dist = (x * x + y * y).sqrt().max(0.05);
-                        if dist.is_nan() {
-                            dist = 0.25;
-                        }
-
                         if start.iter().chain(end.iter()).all(|v| v.is_finite()) {
-                            segments.push(Segment::independent(start, end, 1.0 / dist));
+                            let age = (retained - 1 - i) as f32 / sample_rate;
+                            let energy = exposure * (-lambda * age).exp();
+                            segments.push(Segment::with_energy(start, end, energy, viewport));
                         }
                     }
 
@@ -485,6 +571,9 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 }
             }
 
+            if settings.bleed_enabled && settings.bleed > 0.0 {
+                resources.bloom.encode(args.encoder);
+            }
             {
                 profiling::scope!("vectorscope.composite_encode");
                 // Display the luminosity buffer
@@ -510,6 +599,58 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 pass.set_vertex_buffer(0, resources.quad_buffer.slice(..));
                 pass.draw(0..6, 0..1);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod exposure_tests {
+    use super::*;
+    #[test]
+    fn steady_exposure_is_stable_across_sample_rates_frame_rates_and_budget_limits() {
+        let lambda = -0.8f32.ln() * 60.0;
+        let expected = REFERENCE_ENERGY * REFERENCE_SAMPLE_RATE / lambda;
+        for rate in [22_050.0f32, 44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            for fps in [10.0f32, 30.0, 60.0, 144.0, 240.0] {
+                let total = (rate / fps).round() as usize;
+                let retained = total.min(MAX_LINE_SEGMENTS);
+                let step = -lambda / rate;
+                let age_sum = (step * retained as f32).exp_m1() / step.exp_m1();
+                let injected = REFERENCE_ENERGY * REFERENCE_SAMPLE_RATE / rate
+                    * retained_sample_compensation(total, retained, rate, lambda)
+                    * age_sum;
+                let steady = injected / -(step * total as f32).exp_m1();
+                assert!(
+                    (steady / expected - 1.0).abs() < 0.001,
+                    "sample rate {rate}, fps {fps}: {steady} vs {expected}"
+                );
+            }
+        }
+    }
+    #[test]
+    fn old_settings_keep_default_brightness_and_bleed() {
+        let settings: VectorscopeSettings = ron::from_str("(range: 2.0)").unwrap();
+        assert_eq!(settings.range, 2.0);
+        let defaults = VectorscopeSettings::default();
+        assert_eq!(settings.brightness, defaults.brightness);
+        assert_eq!(settings.bleed, defaults.bleed);
+        assert!(settings.bleed_enabled);
+    }
+    #[test]
+    fn composite_and_decay_shaders_validate_with_uniform_layout() {
+        assert_eq!(size_of::<Uniforms>(), 32);
+        for source in [
+            include_str!("../../../shader/vectorscope_blit.wgsl"),
+            include_str!("../../../shader/decay.wgsl"),
+            include_str!("../../../shader/vectorscope_bloom.wgsl"),
+        ] {
+            let module = wgpu::naga::front::wgsl::parse_str(source).unwrap();
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
         }
     }
 }

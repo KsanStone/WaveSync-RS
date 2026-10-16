@@ -69,7 +69,7 @@ pub struct StereoImagerVisualizerSettings {
 impl Default for StereoImagerVisualizerSettings {
     fn default() -> Self {
         Self {
-            smoothing_factor: 0.95,
+            smoothing_factor: 0.8,
         }
     }
 }
