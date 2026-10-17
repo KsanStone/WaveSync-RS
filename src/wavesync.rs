@@ -549,6 +549,18 @@ impl AppHandler for WaveSync {
                             });
                         self.data.write().unwrap().window_background = background;
                     });
+                    ui.horizontal(|ui| {
+                        use crate::sound::waveform_alignment::AlignmentMode;
+                        ui.label("Waveform alignment");
+                        let mut data = self.data.write().unwrap();
+                        let selected = &mut data.waveform_settings.alignment_mode;
+                        egui::ComboBox::from_id_salt("waveform_alignment")
+                            .selected_text(selected.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(selected, AlignmentMode::LocalTrigger, AlignmentMode::LocalTrigger.label());
+                                ui.selectable_value(selected, AlignmentMode::Legacy, AlignmentMode::Legacy.label());
+                            });
+                    });
                     ui.separator();
                     ui.label(RichText::new("Frame rate").strong());
                     {

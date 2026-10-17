@@ -301,7 +301,20 @@ impl Inner {
         take: usize,
         result: &mut Vec<f32>,
     ) {
-        let buffer = &self.audio_buffer.lock().unwrap()[channel.get_index()];
+        self.get_samples_aligned_with_position_into(channel, count, drop, take, result);
+    }
+
+    /// Snapshot the samples and their channel position atomically for phase tracking.
+    pub fn get_samples_aligned_with_position_into(
+        &self,
+        channel: AudioChannel,
+        count: usize,
+        drop: usize,
+        take: usize,
+        result: &mut Vec<f32>,
+    ) -> u64 {
+        let buffers = self.audio_buffer.lock().unwrap();
+        let buffer = &buffers[channel.get_index()];
         let start_idx = buffer
             .len()
             .saturating_sub(count)
@@ -309,6 +322,7 @@ impl Inner {
             .min(buffer.len());
         let end_idx = start_idx.saturating_add(take).min(buffer.len());
         crate::refill_vec!(*result, buffer.range(start_idx..end_idx).copied());
+        self.channel_samples_written[channel.get_index()].load(Ordering::Acquire)
     }
 
     pub fn get_fft_rate(&self) -> u32 {

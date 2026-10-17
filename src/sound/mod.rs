@@ -8,6 +8,7 @@ pub mod cpal_audio_backend;
 pub mod dummy_audio_backend;
 pub mod loudness;
 pub mod smoothing;
+pub mod waveform_alignment;
 pub mod windowing;
 
 #[derive(Debug, Clone, Copy)]

@@ -1,5 +1,6 @@
 use crate::sound::AudioChannel;
 use crate::sound::audio_service::AudioService;
+use crate::sound::waveform_alignment::{AlignmentMode, Request, WaveformAligner};
 use crate::ui::aa_line::{AaLines, LineScratch, Target};
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
@@ -18,7 +19,6 @@ use std::time::Duration;
 
 const MAX_LINE_SEGMENTS: usize = 2000;
 const PIXELS_PER_WAVE: u64 = 200;
-const MIN_DISPLAYED_SAMPLES: u64 = 10;
 
 deref_arc!(WaveformVisualizer);
 
@@ -37,11 +37,15 @@ struct WaveformScratch {
     samples: Vec<f32>,
     vertices: Vec<[f32; 2]>,
     line: LineScratch,
+    aligner: WaveformAligner,
+    alignment_source: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WaveformSettings {
     pub align_to_peak: bool,
+    #[serde(default)]
+    pub alignment_mode: AlignmentMode,
     pub duration: Duration,
     pub range: f32,
 }
@@ -50,6 +54,7 @@ impl Default for WaveformSettings {
     fn default() -> Self {
         Self {
             align_to_peak: true,
+            alignment_mode: AlignmentMode::default(),
             duration: Duration::from_millis(150),
             range: 1.2,
         }
@@ -176,66 +181,57 @@ impl CallbackTrait for WaveformVisualizerCallback {
             let to_read = (settings.duration.as_secs_f32() * source.sample_rate as f32) as usize;
             let to_read = floor_to_nearest(to_read, half_buffer_size as usize);
 
-            let mut drop = 0;
-            let mut take = to_read;
-            let peak = audio_service.get_fft_peak(channel);
-
-            if settings.align_to_peak
-                && let Some(peak) = peak
-            {
-                let align_low_pass =
-                    (1.2f32 / (to_read as f32 / source.sample_rate as f32)).max(1.0);
-                let should_do_alignement = peak.value > 0.0001
-                    && peak.interpolated_frequency <= 20000.0
-                    && peak.interpolated_frequency >= align_low_pass;
-
-                if should_do_alignement {
-                    let to_read = to_read as u64;
-                    let max_waves = (info.viewport.width() as u64 / PIXELS_PER_WAVE).clamp(1, 50);
-                    let wave_size = source.wave_length(peak.interpolated_frequency.floor()) as f64;
-
-                    drop = (wave_size - audio_service.get_samples_written() as f64 % wave_size)
-                        .max(0.0)
-                        .min((to_read - MIN_DISPLAYED_SAMPLES) as f64)
-                        as u64;
-                    take = to_read
-                        .saturating_sub(wave_size as u64)
-                        .max(1)
-                        .min(wave_size as u64 * max_waves)
-                        .min(to_read - drop) as usize;
-                }
-            }
-
             let mut scratch = self.visualizer.scratch.lock().unwrap();
             let WaveformScratch {
                 uniform_uploads,
                 samples: latest_samples,
                 vertices,
                 line,
+                aligner,
+                alignment_source,
             } = &mut *scratch;
-            audio_service.get_samples_aligned_into(
+            let samples_written = audio_service.get_samples_aligned_with_position_into(
                 channel,
                 to_read,
-                drop as usize,
-                take,
+                0,
+                to_read,
                 latest_samples,
             );
-            let step = (latest_samples.len() / half_buffer_size as usize).max(1);
+            if *alignment_source != source.id {
+                aligner.reset();
+                alignment_source.clone_from(&source.id);
+            }
+            let peak = audio_service.get_fft_peak(channel);
+            let selection = aligner.select(
+                latest_samples,
+                Request {
+                    enabled: settings.align_to_peak,
+                    mode: settings.alignment_mode,
+                    sample_rate: source.sample_rate,
+                    frequency: peak
+                        .filter(|p| p.value > 0.0001)
+                        .map(|p| p.interpolated_frequency),
+                    samples_written,
+                    max_waves: (info.viewport.width() as u64 / PIXELS_PER_WAVE).clamp(1, 50)
+                        as usize,
+                },
+            );
+            let step = (selection.len / half_buffer_size as usize).max(1);
 
             crate::resize_scratch!(
                 *vertices,
-                (buffer_size as usize).min(latest_samples.len()),
+                (buffer_size as usize).min(selection.len),
                 [0.0, 0.0]
             );
             let mut vertices_written = 0;
-            for (i, sample) in latest_samples.iter().enumerate().step_by(step) {
+            for i in (0..selection.len).step_by(step) {
                 let vertex_index = i / step;
                 if vertex_index >= buffer_size as usize {
                     break;
                 }
                 vertices[vertex_index] = [
-                    i as f32 / latest_samples.len() as f32 * 2.0 - 1.0,
-                    plot_data.y_axis.gl_pos(*sample),
+                    i as f32 / selection.len as f32 * 2.0 - 1.0,
+                    plot_data.y_axis.gl_pos(selection.sample(latest_samples, i)),
                 ];
                 vertices_written += 1;
             }
@@ -260,4 +256,22 @@ impl CallbackTrait for WaveformVisualizerCallback {
 
 fn floor_to_nearest(x: usize, n: usize) -> usize {
     (x / n) * n
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    #[test]
+    fn old_settings_load_and_both_alignment_modes_round_trip() {
+        let old = "(align_to_peak:true,duration:(secs:0,nanos:150000000),range:1.2)";
+        let mut settings: WaveformSettings = ron::from_str(old).unwrap();
+        assert_eq!(settings.alignment_mode, AlignmentMode::LocalTrigger);
+        for mode in [AlignmentMode::Legacy, AlignmentMode::LocalTrigger] {
+            settings.alignment_mode = mode;
+            let restored: WaveformSettings =
+                ron::from_str(&ron::to_string(&settings).unwrap()).unwrap();
+            assert_eq!(restored.alignment_mode, mode);
+            assert!(restored.align_to_peak);
+        }
+    }
 }
