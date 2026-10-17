@@ -16,17 +16,20 @@ fn source_bands(position: vec2<i32>) -> vec3<f32> {
     return light * vec3(1.0 - spread, spread * (1.0 - wide), spread * wide);
 }
 fn kernel(offset: i32) -> vec3<f32> {
-    // Half-resolution sigma: approximately 1.6, 3.2 and 6 physical pixels.
-    let sigma = vec3<f32>(0.8, 1.6, 3.0);
+    // Half-resolution sigma: approximately 0.8, 1.6 and 3 physical pixels.
+    let sigma = vec3<f32>(0.4, 0.8, 1.5);
     let x = f32(offset);
-    return exp(vec3<f32>(-0.5 * x * x) / (sigma * sigma));
+    // Six sigma for the widest band. Subtract the value at the next omitted
+    // tap so the finite kernel reaches zero instead of ending in a visible box.
+    let tail = exp(vec3<f32>(-0.5 * 10.0 * 10.0) / (sigma * sigma));
+    return max(exp(vec3<f32>(-0.5 * x * x) / (sigma * sigma)) - tail, vec3<f32>(0.0));
 }
 @compute @workgroup_size(8, 8)
 fn horizontal(@builtin(global_invocation_id) id: vec3<u32>) {
     if any(id.xy >= textureDimensions(horizontal_out)) { return; }
     var light = vec3<f32>(0.0);
     var total = vec3<f32>(0.0);
-    for (var x = -8; x <= 8; x += 1) {
+    for (var x = -9; x <= 9; x += 1) {
         let origin = (vec2<i32>(id.xy) + vec2(x, 0)) * 2;
         let source = (source_bands(origin) + source_bands(origin + vec2(1, 0))
             + source_bands(origin + vec2(0, 1)) + source_bands(origin + vec2(1, 1))) * 0.25;
@@ -42,7 +45,7 @@ fn vertical(@builtin(global_invocation_id) id: vec3<u32>) {
     if any(id.xy >= textureDimensions(bloom_out)) { return; }
     var light = vec3<f32>(0.0);
     var total = vec3<f32>(0.0);
-    for (var y = -8; y <= 8; y += 1) {
+    for (var y = -9; y <= 9; y += 1) {
         let position = vec2<i32>(id.xy) + vec2(0, y);
         let weight = kernel(y);
         if all(position >= vec2<i32>(0)) && all(position < dims) {

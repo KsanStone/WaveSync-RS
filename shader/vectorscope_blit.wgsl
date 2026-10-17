@@ -35,22 +35,17 @@ fn intensity_at(position: vec2<i32>) -> f32 {
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let tex_coord = vec2<i32>(uv * vec2<f32>(textureDimensions(intensity_tex)));
-    let value = intensity_at(tex_coord);
-    let col = uniforms.fill_color.rgb;
-    // Retain the colored-to-white phosphor response, with a soft opacity shoulder.
-    let white = clamp(log2(max(value, 1.0)) / 5.0, 0.0, 1.0);
-    let core_color = mix(col, vec3<f32>(1.0), white);
-    let core_alpha = 1.0 - exp(-value);
-
-    // Bloom already contains intensity-dependent, spatially blurred HDR light.
-    // Compress only after filtering so narrow bright sources can spill outward.
-    var bleed = 0.0;
+    var value = intensity_at(tex_coord);
+    // Both the direct trace and its optical spill are HDR light. Combine them
+    // BEFORE the shared phosphor response: bloom can become white-hot too.
     if uniforms.bleed_strength > 0.0 {
         let light = textureSampleLevel(bloom_tex, bloom_sampler, uv, 0.0).rgb;
-        bleed = 1.0 - exp(-dot(light, vec3<f32>(1.0)) * 4.0 * uniforms.bleed_strength);
+        let bloom = dot(light, vec3<f32>(1.0)) * 4.0 * uniforms.bleed_strength;
+        // Smooth contrast knee: suppress faint haze quadratically, while bright
+        // HDR light approaches its original intensity. No hard spatial cutoff.
+        value += bloom * (bloom / (bloom + 0.5));
     }
-    let halo_alpha = bleed * (1.0 - core_alpha);
-    let alpha = core_alpha + halo_alpha;
-    let color = (core_color * core_alpha + col * halo_alpha) / max(alpha, 0.000001);
-    return vec4<f32>(color, alpha);
+    let white = clamp(log2(max(value, 1.0)) / 5.0, 0.0, 1.0);
+    let color = mix(uniforms.fill_color.rgb, vec3<f32>(1.0), white);
+    return vec4<f32>(color, 1.0 - exp(-value));
 }

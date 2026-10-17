@@ -174,7 +174,7 @@ mod gpu_tests {
                 mapped_at_creation: false,
             });
             let mut fractions = Vec::new();
-            for intensity in [0.5f32, 16.0] {
+            for intensity in [0.5f32, 16.0, 30_000.0] {
                 let mut pixels = vec![0.0f32; 64 * 64];
                 for y in 32..34 {
                     for x in 32..34 {
@@ -250,6 +250,165 @@ mod gpu_tests {
                 fractions[1] > fractions[0] * 2.0,
                 "bright sources must spread a larger fraction of light to distant pixels: {fractions:?}"
             );
+
+            // Composite a white-hot point through the actual display shader:
+            // its halo must whiten beyond the source pixels and retain a tinted
+            // tail beyond the previous square cutoff. Disabled bloom stays sharp.
+            use wgpu::util::DeviceExt;
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("bloom composite regression"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../../../shader/vectorscope_blit.wgsl").into(),
+                ),
+            });
+            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &[crate::ui::VERTEX_2D_BUFFER_LAYOUT],
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Bgra8Unorm,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                multiview: None,
+                cache: None,
+            });
+            let quad = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&[crate::ui::FULL_SCREEN_QUAD]),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 32,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let source_view = source.create_view(&Default::default());
+            let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&source_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: uniforms.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&bloom.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&bloom.sampler),
+                    },
+                ],
+            });
+            let output = device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: source.size(),
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let output_view = output.create_view(&Default::default());
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256 * 64,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            for strength in [0.0f32, 0.05] {
+                queue.write_buffer(
+                    &uniforms,
+                    0,
+                    bytemuck::cast_slice(&[0.3f32, 0.1, 0.6, 1.0, 1.0, 1.0, strength, 0.0]),
+                );
+                let mut encoder = device.create_command_encoder(&Default::default());
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &output_view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    pass.set_pipeline(&pipeline);
+                    pass.set_bind_group(0, &bindings, &[]);
+                    pass.set_vertex_buffer(0, quad.slice(..));
+                    pass.draw(0..6, 0..1);
+                }
+                encoder.copy_texture_to_buffer(
+                    output.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &readback,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(256),
+                            rows_per_image: Some(64),
+                        },
+                    },
+                    output.size(),
+                );
+                queue.submit(Some(encoder.finish()));
+                let (tx, rx) = std::sync::mpsc::channel();
+                readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                    tx.send(r).unwrap();
+                });
+                device.poll(wgpu::PollType::Wait).unwrap();
+                rx.recv().unwrap().unwrap();
+                let pixels = readback.slice(..).get_mapped_range();
+                let pixel = |x: usize| &pixels[31 * 256 + x * 4..31 * 256 + x * 4 + 4];
+                if strength == 0.0 {
+                    assert_eq!(pixel(36)[3], 0, "disabled bloom must not add a halo");
+                } else {
+                    assert!(
+                        pixel(36)[..3].iter().all(|&c| c >= 245),
+                        "bloom must create a white hot area beyond the source: {:?}",
+                        pixel(36)
+                    );
+                    assert!(
+                        pixel(42)[0] > pixel(42)[1] + 10,
+                        "outer halo must return to the trace color: {:?}",
+                        pixel(42)
+                    );
+                    assert!(
+                        pixel(42)[3] > 0 && (pixel(41)[3] as i32 - pixel(42)[3] as i32).abs() < 64,
+                        "no abrupt square edge at the old kernel boundary: {:?} {:?}",
+                        pixel(41),
+                        pixel(42)
+                    );
+                }
+                drop(pixels);
+                readback.unmap();
+            }
+
             assert!(device.pop_error_scope().await.is_none());
         });
     }
