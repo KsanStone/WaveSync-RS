@@ -72,6 +72,23 @@ impl Default for XYPlotData {
 }
 
 impl XYPlotData {
+    pub fn canvas_margin(&self) -> Margin {
+        Margin {
+            left: if self.y_axis_shown {
+                Y_AXIS_WIDTH
+            } else {
+                MARGIN
+            },
+            right: MARGIN,
+            top: MARGIN,
+            bottom: if self.x_axis_shown {
+                X_AXIS_WIDTH
+            } else {
+                MARGIN
+            },
+        }
+    }
+
     pub fn from_axis(x_axis: Axis, y_axis: Axis) -> Self {
         Self {
             x_axis,
@@ -112,6 +129,7 @@ pub struct Plot<'a> {
     label_color: Color32,
     zero_line_color: Color32,
     highlight_color: Color32,
+    aspect_ratio: Option<f32>,
 }
 
 impl<'a> Plot<'a> {
@@ -122,7 +140,13 @@ impl<'a> Plot<'a> {
             label_color: Color32::from_gray(200),
             zero_line_color: Color32::from_gray(255),
             highlight_color: Color32::from_rgb(255, 0, 0),
+            aspect_ratio: None,
         }
+    }
+
+    pub fn aspect_ratio(mut self, ratio: Option<f32>) -> Self {
+        self.aspect_ratio = ratio;
+        self
     }
 
     pub fn set_grid_color(mut self, color: Color32) -> Self {
@@ -156,20 +180,9 @@ impl<'a> Plot<'a> {
             highlight_color: self.highlight_color,
         };
         let mut occupied_label_rects = Vec::new();
-        let content_rect = rect.sub(Margin {
-            left: if self.plot_data.y_axis_shown {
-                Y_AXIS_WIDTH
-            } else {
-                MARGIN
-            },
-            right: MARGIN,
-            top: MARGIN,
-            bottom: if self.plot_data.x_axis_shown {
-                X_AXIS_WIDTH
-            } else {
-                MARGIN
-            },
-        });
+        let content_rect = rect.sub(self.plot_data.canvas_margin());
+
+        let content_rect = fit_plot_aspect(content_rect, self.aspect_ratio);
 
         for (axis, shown, grid_shown, orientation) in [
             (
@@ -199,5 +212,68 @@ impl<'a> Plot<'a> {
         }
 
         content_rect
+    }
+}
+
+/// Fit the actual plotting area, leaving axis labels outside the constrained rectangle.
+fn fit_plot_aspect(rect: Rect, ratio: Option<f32>) -> Rect {
+    let Some(ratio) = ratio.filter(|r| r.is_finite() && *r > 0.0) else {
+        return rect;
+    };
+    let width = rect.width().max(0.0).min(rect.height().max(0.0) * ratio);
+    Rect::from_center_size(rect.center(), egui::vec2(width, width / ratio))
+}
+
+#[cfg(test)]
+mod aspect_tests {
+    use super::*;
+
+    #[test]
+    fn square_canvas_accounts_for_unequal_axis_margins() {
+        let ctx = egui::Context::default();
+        let mut data = XYPlotData::default();
+        let margin = data.canvas_margin();
+        let outer_size = egui::vec2(300.0, 300.0) + margin.sum();
+        assert_ne!(outer_size.x, outer_size.y);
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1000.0, 1000.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut child = ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(Rect::from_min_size(ui.cursor().min, outer_size)),
+                    );
+                    let canvas = Plot::new(&mut data)
+                        .aspect_ratio(Some(1.0))
+                        .show(&mut child);
+                    assert!((canvas.width() - 300.0).abs() < 0.001);
+                    assert!((canvas.height() - 300.0).abs() < 0.001);
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn constrained_plots_fit_wide_tall_and_small_cells() {
+        for size in [
+            egui::vec2(600.0, 220.0),
+            egui::vec2(180.0, 500.0),
+            egui::vec2(24.0, 12.0),
+        ] {
+            let bounds = Rect::from_min_size(egui::pos2(35.0, 25.0), size);
+            for ratio in [1.0, 2.0] {
+                let plot = fit_plot_aspect(bounds, Some(ratio));
+                assert!((plot.width() / plot.height() - ratio).abs() < 0.0001);
+                assert!(bounds.contains_rect(plot));
+                assert_eq!(plot.center(), bounds.center());
+            }
+            assert_eq!(fit_plot_aspect(bounds, None), bounds);
+        }
     }
 }

@@ -146,7 +146,37 @@ pub const GRAPHITE: Theme = Theme {
     crust: Color32::from_rgb(14, 14, 14),
 };
 
-pub const THEMES: [(&str, Theme); 9] = [
+/// Near-black surfaces with saturated neon accents and an electric cyan trace.
+pub const NEON: Theme = Theme {
+    rosewater: Color32::from_rgb(255, 207, 244),
+    flamingo: Color32::from_rgb(255, 76, 180),
+    pink: Color32::from_rgb(255, 46, 209),
+    mauve: Color32::from_rgb(180, 87, 255),
+    red: Color32::from_rgb(255, 51, 98),
+    maroon: Color32::from_rgb(255, 74, 132),
+    peach: Color32::from_rgb(255, 152, 48),
+    yellow: Color32::from_rgb(244, 255, 64),
+    green: Color32::from_rgb(106, 255, 70),
+    teal: Color32::from_rgb(0, 255, 183),
+    sky: Color32::from_rgb(66, 238, 255),
+    sapphire: Color32::from_rgb(0, 178, 255),
+    blue: Color32::from_rgb(0, 255, 230),
+    lavender: Color32::from_rgb(156, 140, 255),
+    text: Color32::from_rgb(225, 240, 247),
+    subtext1: Color32::from_rgb(180, 201, 214),
+    subtext0: Color32::from_rgb(135, 158, 178),
+    overlay2: Color32::from_rgb(100, 124, 148),
+    overlay1: Color32::from_rgb(74, 94, 118),
+    overlay0: Color32::from_rgb(53, 69, 91),
+    surface2: Color32::from_rgb(42, 56, 77),
+    surface1: Color32::from_rgb(27, 36, 53),
+    surface0: Color32::from_rgb(19, 26, 39),
+    base: Color32::from_rgb(7, 10, 18),
+    mantle: Color32::from_rgb(5, 7, 13),
+    crust: Color32::from_rgb(3, 4, 9),
+};
+
+pub const THEMES: [(&str, Theme); 10] = [
     ("Mocha", catppuccin_egui::MOCHA),
     ("Frappe", catppuccin_egui::FRAPPE),
     ("Macchiato", catppuccin_egui::MACCHIATO),
@@ -156,6 +186,7 @@ pub const THEMES: [(&str, Theme); 9] = [
     ("Tokyo Night", TOKYO_NIGHT),
     ("Gruvbox Dark", GRUVBOX_DARK),
     ("Graphite", GRAPHITE),
+    ("Neon", NEON),
 ];
 
 pub fn theme_name(theme: Theme) -> &'static str {

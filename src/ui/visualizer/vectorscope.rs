@@ -79,6 +79,8 @@ impl VectorscopeVisualizer {
 }
 
 impl Visualizer for VectorscopeVisualizer {
+    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(48.0, 48.0) }
+
     fn get_plot_data(&self) -> PlotData {
         let range = self.data.read().unwrap().vectorscope_settings.range;
         let x_axis = Axis::linear(-range, range).always_show_zero(true);
@@ -86,7 +88,8 @@ impl Visualizer for VectorscopeVisualizer {
         PlotData::XY(XYPlotData::from_axis(x_axis, y_axis))
     }
 
-    fn error_message(&self) -> Option<String> {
+    fn error_message(&self, canvas_size: egui::Vec2) -> Option<String> {
+        if let Some(error) = self.size_error(canvas_size) { return Some(error); }
         if self.audio_service.get_active_audio_channels() < 2 {
             Some("Vectorscope requires at least 2 channels".into())
         } else {

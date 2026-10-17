@@ -103,6 +103,8 @@ impl StereoImagerVisualizer {
 }
 
 impl Visualizer for StereoImagerVisualizer {
+    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 32.0) }
+
     fn get_plot_data(&self) -> PlotData {
         let balance = self.0.lr_balance.lock().unwrap().clamp(-1.0, 1.0);
         PlotData::Polar(
@@ -125,7 +127,8 @@ impl Visualizer for StereoImagerVisualizer {
         )
     }
 
-    fn error_message(&self) -> Option<String> {
+    fn error_message(&self, canvas_size: egui::Vec2) -> Option<String> {
+        if let Some(error) = self.size_error(canvas_size) { return Some(error); }
         if self.audio_service.get_active_audio_channels() < 2 {
             Some("StereoImager requires at least 2 channels".into())
         } else {

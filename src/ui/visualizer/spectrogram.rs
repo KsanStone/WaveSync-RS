@@ -127,6 +127,8 @@ impl Default for SpectrogramSettings {
 }
 
 impl Visualizer for SpectrogramVisualizer {
+    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 24.0) }
+
     fn get_plot_data(&self) -> PlotData {
         let settings = &self.data.read().unwrap().spectrogram_settings;
         let db_axis = Axis::linear(-100.0, 0.0);
@@ -154,7 +156,8 @@ impl Visualizer for SpectrogramVisualizer {
         );
     }
 
-    fn error_message(&self) -> Option<String> {
+    fn error_message(&self, canvas_size: egui::Vec2) -> Option<String> {
+        if let Some(error) = self.size_error(canvas_size) { return Some(error); }
         if self.audio_service.get_fft_size() > 2_usize.pow(19) {
             return Some(
                 "Spectrogram visualizer does not support FFT sizes larger than 65k".to_string(),

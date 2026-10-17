@@ -79,6 +79,8 @@ impl WaveformVisualizer {
 }
 
 impl Visualizer for WaveformVisualizer {
+    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 24.0) }
+
     fn get_plot_data(&self) -> PlotData {
         let range = self.data.read().unwrap().waveform_settings.range;
         PlotData::XY(

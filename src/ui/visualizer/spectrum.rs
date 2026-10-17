@@ -135,6 +135,8 @@ impl SpectrumVisualizer {
 }
 
 impl Visualizer for SpectrumVisualizer {
+    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 48.0) }
+
     fn get_plot_data(&self) -> PlotData {
         let settings = &self.data.read().unwrap().spectrum_settings;
         let mut data = XYPlotData::from_axis(

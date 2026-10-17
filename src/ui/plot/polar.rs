@@ -136,6 +136,7 @@ pub struct PolarPlot<'a> {
     label_color: Color32,
     zero_line_color: Color32,
     hightlight_color: Color32,
+    aspect_ratio: Option<f32>,
 }
 
 impl<'a> PolarPlot<'a> {
@@ -146,7 +147,13 @@ impl<'a> PolarPlot<'a> {
             label_color: Color32::from_gray(200),
             zero_line_color: Color32::from_gray(255),
             hightlight_color: Color32::from_gray(100),
+            aspect_ratio: None,
         }
+    }
+
+    pub fn aspect_ratio(mut self, ratio: Option<f32>) -> Self {
+        self.aspect_ratio = ratio;
+        self
     }
 
     pub fn set_grid_color(mut self, color: Color32) -> Self {
@@ -205,7 +212,8 @@ impl<'a> PolarPlot<'a> {
             rect.min + Vec2::new(horizontal_margin, vertical_margin),
             rect.max - Vec2::new(horizontal_margin, bottom_margin),
         );
-        let plot_paint_rect = plot_clip_rect.sub(Margin::same(1)); // we need to leave some space for the stroke of the ellipse.
+        let plot_paint_rect =
+            super::fit_plot_aspect(plot_clip_rect.sub(Margin::same(1)), self.aspect_ratio); // we need to leave some space for the stroke of the ellipse.
 
         let painter = ui.painter().with_clip_rect(plot_clip_rect);
         // we need to clip the painter so that the ellipse does not go outside the plot area.
@@ -255,7 +263,7 @@ impl<'a> PolarPlot<'a> {
             paint_axis(
                 ui.painter(), // this painter cannot be clipped
                 axis,
-                plot_clip_rect,
+                plot_paint_rect,
                 super::AxisOrientation::Horizontal,
                 false,
                 &style,
