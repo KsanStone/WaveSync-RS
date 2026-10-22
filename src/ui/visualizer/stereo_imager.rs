@@ -1,3 +1,6 @@
+use crate::sound::peaking::{
+    PeakComputer, PeakSettings, hold_smooth_falloff::HoldSmoothFalloffPeakComputer,
+};
 use crate::ui::aa_line::{AaLines, LineScratch, Target};
 use crate::{
     deref_arc, impl_settings,
@@ -53,22 +56,30 @@ pub struct Inner {
 
 #[derive(Default)]
 struct StereoScratch {
+    peak_uniform_uploads: crate::ui::uniform_upload::UniformUploads,
     uniform_uploads: crate::ui::uniform_upload::UniformUploads,
     left: Vec<f32>,
     right: Vec<f32>,
     vertices: Vec<[f32; 2]>,
     line: LineScratch,
+    peak_computer: HoldSmoothFalloffPeakComputer,
+    peak_values: Vec<f32>,
+    peak_vertices: Vec<[f32; 2]>,
+    peak_line: LineScratch,
     fill_vertices: Vec<[f32; 2]>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StereoImagerVisualizerSettings {
+    #[serde(default)]
+    pub peaks: PeakSettings,
     smoothing_factor: f32,
 }
 
 impl Default for StereoImagerVisualizerSettings {
     fn default() -> Self {
         Self {
+            peaks: PeakSettings::default(),
             smoothing_factor: 0.8,
         }
     }
@@ -77,6 +88,7 @@ impl Default for StereoImagerVisualizerSettings {
 struct RenderResources {
     queue: wgpu::Queue,
     line: AaLines,
+    peak_line: AaLines,
     fill_vertex_buffer: wgpu::Buffer,
     fill_uniform_buffer: wgpu::Buffer,
     fill_bind_group: wgpu::BindGroup,
@@ -103,7 +115,9 @@ impl StereoImagerVisualizer {
 }
 
 impl Visualizer for StereoImagerVisualizer {
-    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 32.0) }
+    fn min_canvas_size(&self) -> egui::Vec2 {
+        egui::vec2(64.0, 32.0)
+    }
 
     fn get_plot_data(&self) -> PlotData {
         let balance = self.0.lr_balance.lock().unwrap().clamp(-1.0, 1.0);
@@ -128,7 +142,9 @@ impl Visualizer for StereoImagerVisualizer {
     }
 
     fn error_message(&self, canvas_size: egui::Vec2) -> Option<String> {
-        if let Some(error) = self.size_error(canvas_size) { return Some(error); }
+        if let Some(error) = self.size_error(canvas_size) {
+            return Some(error);
+        }
         if self.audio_service.get_active_audio_channels() < 2 {
             Some("StereoImager requires at least 2 channels".into())
         } else {
@@ -143,12 +159,15 @@ impl Visualizer for StereoImagerVisualizer {
                 visualizer: self.clone(),
                 color_start: visuals.color_start(),
                 color_end: visuals.color_end(),
+                highlight_color: visuals.highlight_color(),
             },
         ))
     }
 
     impl_settings!("StereoImager Settings", ui, this, {
         let settings = &mut this.data.write().unwrap().stereo_imager_settings;
+        settings.peaks.draw_ui(ui);
+        ui.separator();
 
         ui.horizontal(|ui| {
             ui.label("Smoothing factor: ");
@@ -161,6 +180,7 @@ struct StereoImagerVisualizerCallback {
     visualizer: StereoImagerVisualizer,
     color_start: Color32,
     color_end: Color32,
+    highlight_color: Color32,
 }
 
 #[repr(C)]
@@ -224,9 +244,11 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 });
 
             self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
+            self.visualizer.scratch.lock().unwrap().peak_uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 queue: queue.clone(),
                 line: AaLines::new(device, DIRECTION_BINS * 2, Target::Color),
+                peak_line: AaLines::new(device, DIRECTION_BINS * 2, Target::Color),
                 fill_vertex_buffer: fill_buffer,
                 fill_uniform_buffer,
                 fill_bind_group,
@@ -271,10 +293,15 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             let mut scratch = self.visualizer.scratch.lock().unwrap();
             let StereoScratch {
                 uniform_uploads,
+                peak_uniform_uploads,
                 left: l_samples,
                 right: r_samples,
                 vertices,
                 line,
+                peak_computer,
+                peak_values,
+                peak_vertices,
+                peak_line,
                 fill_vertices: tri_vertices,
             } = &mut *scratch;
             self.visualizer.audio_service.get_samples_aligned_into(
@@ -375,6 +402,29 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             let mut lr_balance = self.visualizer.lr_balance.lock().unwrap();
             *lr_balance = balance;
 
+            let settings_guard = self.visualizer.data.read().unwrap();
+            let peak_settings = &settings_guard.stereo_imager_settings.peaks;
+            peak_vertices.clear();
+            if peak_settings.enabled {
+                peak_settings.configure(peak_computer);
+                peak_values.clear();
+                peak_values.extend(
+                    smooth_data
+                        .iter()
+                        .map(|v| scale_to_db(*v).clamp(-70.0, 0.0)),
+                );
+                let peaks = peak_computer.compute_peaks(delta_t.as_secs_f32(), peak_values);
+                for (i, value) in peaks.iter().enumerate() {
+                    let magnitude = (*value + 70.0) / 70.0;
+                    let start = plot_data.gl_pos(i as f32 / DIRECTION_BINS as f32 * PI, magnitude);
+                    let end =
+                        plot_data.gl_pos((i + 1) as f32 / DIRECTION_BINS as f32 * PI, magnitude);
+                    peak_vertices.extend_from_slice(&[[start.x, start.y], [end.x, end.y]]);
+                }
+            } else {
+                peak_computer.reset();
+            }
+
             // Compute boundry verts
             // The point is to have a pair of verticies for each bin,
             // aligned exactly as described above in the binning process.
@@ -445,6 +495,19 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 viewport,
             );
             resources.line.draw(render_pass, line.segments.len());
+            if peak_settings.enabled {
+                peak_line.polyline(peak_vertices, viewport);
+                resources.peak_line.upload(queue, &peak_line.segments);
+                resources.peak_line.configure(
+                    queue,
+                    peak_uniform_uploads,
+                    self.highlight_color.to_normalized_gamma_f32(),
+                    viewport,
+                );
+                resources
+                    .peak_line
+                    .draw(render_pass, peak_line.segments.len());
+            }
         }
     }
 }

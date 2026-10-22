@@ -51,6 +51,23 @@ pub struct WaveSync {
     media_texture: Option<(u64, egui::TextureHandle)>,
 }
 
+/// Keep each translucent material's opacity when switching background modes.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackgroundOpacity {
+    acrylic: f32,
+    mica: f32,
+}
+
+impl Default for BackgroundOpacity {
+    fn default() -> Self {
+        Self {
+            acrylic: 175.0 / 255.0,
+            mica: 96.0 / 255.0,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct WaveSyncAppData {
     pub waveform_settings: WaveformSettings,
@@ -64,6 +81,8 @@ pub struct WaveSyncAppData {
     pub theme_name: String,
     pub audio_device_name: Option<String>,
     pub window_background: WindowBackground,
+    #[serde(default)]
+    pub background_opacity: BackgroundOpacity,
     #[serde(default)]
     pub frame_settings: FrameSettings,
 }
@@ -82,6 +101,7 @@ impl Default for WaveSyncAppData {
             theme_name: "Frappe".into(),
             audio_device_name: None,
             window_background: WindowBackground::Acrylic,
+            background_opacity: BackgroundOpacity::default(),
             frame_settings: FrameSettings::default(),
         }
     }
@@ -90,6 +110,7 @@ impl Default for WaveSyncAppData {
 pub struct WaveSyncVisuals {
     theme: catppuccin_egui::Theme,
     window_background: WindowBackground,
+    background_opacity: BackgroundOpacity,
 }
 
 impl WaveSyncVisuals {
@@ -98,13 +119,18 @@ impl WaveSyncVisuals {
     }
 
     fn background_overlay(&self) -> Color32 {
-        match self.window_background {
-            // Comparable to Windows Terminal's dark acrylic opacity: wallpaper still affects
-            // the material, but never washes out the visualization contrast.
-            WindowBackground::Acrylic => Color32::from_rgba_unmultiplied(8, 10, 15, 175),
-            WindowBackground::Mica => Color32::from_rgba_unmultiplied(8, 10, 15, 96),
-            WindowBackground::Solid => Color32::TRANSPARENT,
-        }
+        let opacity = match self.window_background {
+            WindowBackground::Acrylic => self.background_opacity.acrylic,
+            WindowBackground::Mica => self.background_opacity.mica,
+            WindowBackground::Solid => return Color32::TRANSPARENT,
+        };
+        let background = self.theme.base;
+        Color32::from_rgba_unmultiplied(
+            background.r(),
+            background.g(),
+            background.b(),
+            (opacity.clamp(0.0, 1.0) * 255.0).round() as u8,
+        )
     }
 
     fn background_color(&self, color: Color32, alpha: u8) -> Color32 {
@@ -133,6 +159,11 @@ impl WaveSyncVisuals {
 
     pub fn color_end(&self) -> Color32 {
         self.theme.blue
+    }
+
+    /// Lighter trace accent for overlays that need to stand out from the live signal.
+    pub fn highlight_color(&self) -> Color32 {
+        self.color_end().lerp_to_gamma(Color32::WHITE, 0.10)
     }
 
     pub fn plot_grid(&self) -> Color32 {
@@ -171,6 +202,7 @@ impl WaveSync {
         let theme_name = data.theme_name.clone();
         let data = Arc::new(RwLock::new(data));
         let window_background = data.read().unwrap().window_background;
+        let background_opacity = data.read().unwrap().background_opacity;
 
         let mut waveform_visualizers = vec![];
         let mut spectrum_visualizers = vec![];
@@ -220,6 +252,7 @@ impl WaveSync {
             visuals: WaveSyncVisuals {
                 theme: theme_from_name(&theme_name),
                 window_background,
+                background_opacity,
             },
             data,
             visualizer_bounds: Default::default(),
@@ -408,14 +441,13 @@ impl AppHandler for WaveSync {
         let delta_t = self.last_update.elapsed().as_secs_f32();
         self.last_update = Instant::now();
         catppuccin_egui::set_theme(ctx, self.visuals.theme);
-        self.visuals.window_background = self.data.read().unwrap().window_background;
-        if self.visuals.translucent_background() {
-            ctx.style_mut(|style| {
-                style.visuals.window_fill = self.visuals.background_overlay();
-                style.visuals.panel_fill = self.visuals.background_overlay();
-                style.visuals.extreme_bg_color = Color32::from_rgba_unmultiplied(18, 19, 26, 120);
-            });
+        {
+            let data = self.data.read().unwrap();
+            self.visuals.window_background = data.window_background;
+            self.visuals.background_opacity = data.background_opacity;
         }
+        // Keep the theme's opaque window, popup and input fills. Material opacity
+        // applies only to the app backdrop; floating UI must remain readable.
 
         // Paint a single backdrop across caption and content. Panel frames stay
         // transparent so their overlay does not get applied twice.
@@ -568,6 +600,21 @@ impl AppHandler for WaveSync {
                             });
                         self.data.write().unwrap().window_background = background;
                     });
+                    {
+                        let mut data = self.data.write().unwrap();
+                        let opacity = match data.window_background {
+                            WindowBackground::Acrylic => Some(&mut data.background_opacity.acrylic),
+                            WindowBackground::Mica => Some(&mut data.background_opacity.mica),
+                            WindowBackground::Solid => None,
+                        };
+                        let enabled = opacity.is_some();
+                        let mut percent = opacity.as_deref().copied().unwrap_or(1.0) * 100.0;
+                        if ui.add_enabled(enabled, egui::Slider::new(&mut percent, 0.0..=100.0)
+                            .text("Background opacity").suffix("%" )).changed() {
+                            if let Some(opacity) = opacity { *opacity = percent / 100.0; }
+                        }
+                    }
+
                     ui.horizontal(|ui| {
                         use crate::sound::waveform_alignment::AlignmentMode;
                         ui.label("Waveform alignment");
@@ -640,7 +687,11 @@ impl AppHandler for WaveSync {
             .visualizer_bounds
             .get(&(VisualizerType::Vectorscope, AudioChannel::Master))
             .cloned();
-        if let Some(rect) = rect.filter(|rect| self.vectorscope_visualizer.error_message(rect.size()).is_none()) {
+        if let Some(rect) = rect.filter(|rect| {
+            self.vectorscope_visualizer
+                .error_message(rect.size())
+                .is_none()
+        }) {
             let vectorscope_callback = &self
                 .vectorscope_visualizer
                 .get_post_egui_render(rect, &self.visuals);

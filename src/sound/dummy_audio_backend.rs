@@ -105,7 +105,7 @@ impl AudioBackend for DummyAudioBackend {
         self.audio_system.clone()
     }
 
-    fn set_frame_callback(&mut self, callback: Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>) {
+    fn set_frame_callback(&mut self, callback: Box<dyn FnMut(&[Vec<f32>]) + Send + Sync>) {
         self.capture_callback = Some(Arc::new(Mutex::new(callback)));
     }
 
@@ -116,17 +116,21 @@ impl AudioBackend for DummyAudioBackend {
         let _source = self.capture_source.clone();
 
         thread::spawn(move || {
+            let mut frames = [vec![0.0; 960], vec![0.0; 960]];
             loop {
                 if let Some(callback) = callback_weak.upgrade() {
-                    let mut frame_l = vec![0.0; 960];
-                    let mut frame_r = vec![0.0; 960];
+                    let [frame_l, frame_r] = &mut frames;
+                    for frame in [&mut *frame_l, &mut *frame_r] {
+                        frame.resize(960, 0.0);
+                        frame.fill(0.0);
+                    }
                     let pattern = { *pattern_data.pattern.lock().unwrap() };
 
                     match pattern {
                         TestPattern::WaveSynth => {
                             synthesize_frames(
-                                &mut frame_l,
-                                &mut frame_r,
+                                frame_l,
+                                frame_r,
                                 &sequence_index,
                                 &pattern_data.sequencer_frequency,
                             );
@@ -158,7 +162,7 @@ impl AudioBackend for DummyAudioBackend {
                         }
                     }
 
-                    callback.lock().unwrap()(vec![frame_l, frame_r]);
+                    callback.lock().unwrap()(&frames);
                 } else {
                     break;
                 }

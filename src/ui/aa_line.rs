@@ -15,6 +15,19 @@ pub(crate) struct Segment {
     padding: [u32; 2],
 }
 impl Segment {
+    /// Separate flat bar cap, with butt ends rather than joined neighbouring bars.
+    pub fn horizontal_cap(x1: f32, x2: f32, y: f32) -> Self {
+        Self {
+            start: [x1, y],
+            end: [x2, y],
+            start_normal: [0.0, 1.0],
+            end_normal: [0.0, 1.0],
+            weight: 1.0,
+            flags: 2 | 4,
+            padding: [0; 2],
+        }
+    }
+
     /// Deposit a fixed amount of light, independent of segment length and caps.
     /// For a one-pixel stroke, the triangular AA kernel integrates to `length`
     /// along the shaft and pi/3 across the two round end caps combined.
@@ -310,6 +323,18 @@ impl AaLines {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bar_peak_caps_have_flat_independent_ends() {
+        let caps = [
+            Segment::horizontal_cap(-1.0, 0.0, 0.2),
+            Segment::horizontal_cap(0.0, 1.0, 0.8),
+        ];
+        assert_eq!(caps[0].start[1], caps[0].end[1]);
+        assert_eq!(caps[1].start[1], caps[1].end[1]);
+        assert_ne!(caps[0].end, caps[1].start);
+        assert!(caps.iter().all(|cap| cap.flags == 2 | 4));
+    }
+
     #[test]
     fn joins_are_shared_and_bounded_in_pixel_space() {
         let mut scratch = LineScratch::default();

@@ -25,13 +25,17 @@ macro_rules! impl_stream_methods {
         fn $fn_prefix(
             device: &Device,
             config: StreamConfig,
-            callback: Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>,
+            callback: Arc<Mutex<Box<dyn FnMut(&[Vec<f32>]) + Send + Sync>>>,
             channels: usize,
         ) -> Result<Stream, Box<dyn std::error::Error>> {
+            // Owned by the stream closure, reused after the synchronous callback.
+            let mut channel_data = vec![Vec::new(); channels];
             let stream = device.build_input_stream(
                 config,
                 move |data: &[$sample_type], _: &cpal::InputCallbackInfo| {
-                    let mut channel_data = vec![vec![0.0; data.len() / channels]; channels];
+                    for channel in &mut channel_data {
+                        channel.resize(data.len() / channels, 0.0);
+                    }
                     for (i, &sample) in data.iter().enumerate() {
                         let channel = i % channels;
                         let frame_idx = i / channels;
@@ -39,7 +43,7 @@ macro_rules! impl_stream_methods {
                             channel_data[channel][frame_idx] = $convert(sample);
                         }
                     }
-                    callback.lock().unwrap()(channel_data);
+                    callback.lock().unwrap()(&channel_data);
                 },
                 |err| error!("Stream error: {}", err),
                 None,
@@ -183,7 +187,7 @@ impl AudioBackend for CpalAudioBackend {
         self.audio_system.clone()
     }
 
-    fn set_frame_callback(&mut self, callback: Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>) {
+    fn set_frame_callback(&mut self, callback: Box<dyn FnMut(&[Vec<f32>]) + Send + Sync>) {
         self.capture_callback = Some(Arc::new(Mutex::new(callback)));
     }
 

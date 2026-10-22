@@ -10,6 +10,7 @@ pub mod loudness;
 pub mod smoothing;
 pub mod waveform_alignment;
 pub mod windowing;
+pub mod peaking;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AudioBackendType {

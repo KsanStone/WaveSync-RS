@@ -3,7 +3,7 @@ use crate::sound::capture_source::CaptureSource;
 use std::any::Any;
 use std::sync::{Arc, Mutex};
 
-pub type OptionCaptureCallback = Option<Arc<Mutex<Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>>>>;
+pub type OptionCaptureCallback = Option<Arc<Mutex<Box<dyn FnMut(&[Vec<f32>]) + Send + Sync>>>>;
 
 /// The AudioBackend trait is used to abstract away the actual audio backend.
 /// Each backend can potentially handle many audio systems, (such as ASIO and WASAPI on windows)
@@ -21,7 +21,8 @@ pub trait AudioBackend: Send + Sync + Any {
     /// Return the AudioSystem currently in use.
     fn get_current_audio_system(&self) -> AudioSystem;
 
-    fn set_frame_callback(&mut self, callback: Box<dyn FnMut(Vec<Vec<f32>>) + Send + Sync>);
+    /// Samples are borrowed for this synchronous call; the backend retains and reuses storage.
+    fn set_frame_callback(&mut self, callback: Box<dyn FnMut(&[Vec<f32>]) + Send + Sync>);
 
     fn start_capture(&mut self, source: CaptureSource);
 

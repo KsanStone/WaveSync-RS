@@ -176,7 +176,36 @@ pub const GREEN: Theme = Theme {
     crust: Color32::from_rgb(3, 4, 3),
 };
 
-pub const THEMES: [(&str, Theme); 10] = [
+pub const DEEP_BLUE: Theme = Theme {
+    rosewater: Color32::from_rgb(195, 255, 218),
+    flamingo: Color32::from_rgb(130, 255, 175),
+    pink: Color32::from_rgb(80, 255, 155),
+    mauve: Color32::from_rgb(45, 220, 125),
+    red: Color32::from_rgb(255, 65, 85),
+    maroon: Color32::from_rgb(210, 55, 75),
+    peach: Color32::from_rgb(255, 165, 75),
+    yellow: Color32::from_rgb(225, 255, 95),
+    green: Color32::from_rgb(0, 255, 135),
+    teal: Color32::from_rgb(0, 225, 115),
+    sky: Color32::from_rgb(45, 255, 155),
+    sapphire: Color32::from_rgb(0, 175, 90),
+    blue: Color32::from_rgb(25, 45, 255),
+    lavender: Color32::from_rgb(110, 235, 160),
+    text: Color32::from_rgb(228, 228, 222),
+    subtext1: Color32::from_rgb(200, 200, 196),
+    subtext0: Color32::from_rgb(170, 170, 168),
+    overlay2: Color32::from_rgb(78, 94, 144),
+    overlay1: Color32::from_rgb(62, 74, 110),
+    overlay0: Color32::from_rgb(48, 51, 70),
+    surface2: Color32::from_rgb(46, 48, 60),
+    surface1: Color32::from_rgb(32, 35, 50),
+    surface0: Color32::from_rgb(28, 30, 45),
+    base: Color32::from_rgb(20, 22, 34),
+    mantle: Color32::from_rgb(13, 14, 24),
+    crust: Color32::from_rgb(5, 6, 13),
+};
+
+pub const THEMES: [(&str, Theme); 11] = [
     ("Mocha", catppuccin_egui::MOCHA),
     ("Frappe", catppuccin_egui::FRAPPE),
     ("Macchiato", catppuccin_egui::MACCHIATO),
@@ -187,6 +216,7 @@ pub const THEMES: [(&str, Theme); 10] = [
     ("Gruvbox Dark", GRUVBOX_DARK),
     ("Graphite", GRAPHITE),
     ("Green", GREEN),
+    ("Deep Blue", DEEP_BLUE),
 ];
 
 pub fn theme_name(theme: Theme) -> &'static str {

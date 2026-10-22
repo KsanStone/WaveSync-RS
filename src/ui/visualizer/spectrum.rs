@@ -1,4 +1,7 @@
 use crate::sound::audio_service::AudioService;
+use crate::sound::peaking::{
+    PeakComputer, PeakSettings, hold_smooth_falloff::HoldSmoothFalloffPeakComputer,
+};
 use crate::sound::smoothing::FloatArraySmoother;
 use crate::sound::smoothing::exponential_falloff_smoother::ExponentialFalloffSmoother;
 use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
@@ -54,6 +57,7 @@ struct SpectrumPositionKey {
 
 #[derive(Default)]
 struct SpectrumScratch {
+    peak_uniform_uploads: crate::ui::uniform_upload::UniformUploads,
     uniform_uploads: crate::ui::uniform_upload::UniformUploads,
     bin_positions: crate::ui::vec_cache::CachedVec<SpectrumPositionKey, [f32; 2]>,
     fft: Vec<f32>,
@@ -63,10 +67,17 @@ struct SpectrumScratch {
     spline_padding: Vec<[f32; 2]>,
     spline_output: Vec<[f32; 2]>,
     outline: LineScratch,
+    peak_computer: HoldSmoothFalloffPeakComputer,
+    peak_values: Vec<f32>,
+    peak_positions: Vec<[f32; 2]>,
+    peak_line: LineScratch,
+    peak_key: Option<(u32, usize, u32, u32, bool, u32)>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SpectrumVisualizerSettings {
+    #[serde(default)]
+    pub peaks: PeakSettings,
     pub draw_type: SpectrumVisualizerType,
     pub smoother_type: SmootherType,
     pub smoother_factor: f32,
@@ -79,6 +90,7 @@ pub struct SpectrumVisualizerSettings {
 impl Default for SpectrumVisualizerSettings {
     fn default() -> Self {
         Self {
+            peaks: PeakSettings::default(),
             draw_type: SpectrumVisualizerType::Line,
             smoother_type: SmootherType::Multiplicative,
             smoother_factor: 0.7,
@@ -146,6 +158,8 @@ impl Visualizer for SpectrumVisualizer {
 
     impl_settings!("Spectrum Settings", ui, this, {
         let settings = &mut this.data.write().unwrap().spectrum_settings;
+        settings.peaks.draw_ui(ui);
+        ui.separator();
 
         ui.horizontal(|ui| {
             ui.label("Render mode: ");
@@ -214,6 +228,7 @@ pub struct SpectrumVisualizerCallback {
     visualizer: SpectrumVisualizer,
     color_start: Color32,
     color_end: Color32,
+    highlight_color: Color32,
 }
 
 impl SpectrumVisualizerCallback {
@@ -222,6 +237,7 @@ impl SpectrumVisualizerCallback {
             visualizer,
             color_start: visuals.color_start(),
             color_end: visuals.color_end(),
+            highlight_color: visuals.highlight_color(),
         }
     }
 }
@@ -245,6 +261,7 @@ struct RenderResources {
     bars_pipeline: wgpu::RenderPipeline,
     line_fill_pipeline: wgpu::RenderPipeline,
     outline: AaLines,
+    peak_line: AaLines,
     vertex_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
@@ -321,8 +338,10 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             });
 
             self.visualizer.scratch.lock().unwrap().uniform_uploads = Default::default();
+            self.visualizer.scratch.lock().unwrap().peak_uniform_uploads = Default::default();
             *resources = Some(RenderResources {
                 outline: AaLines::new(device, MAX_BARS as usize * 8, Target::Color),
+                peak_line: AaLines::new(device, MAX_BARS as usize * 8, Target::Color),
                 bars_pipeline: create_pipeline(
                     device,
                     &bar_shader,
@@ -440,6 +459,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             let mut scratch = self.visualizer.scratch.lock().unwrap();
             let SpectrumScratch {
                 uniform_uploads,
+                peak_uniform_uploads,
                 bin_positions,
                 fft: fft_target,
                 positions: position_data,
@@ -448,6 +468,11 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 spline_padding,
                 spline_output,
                 outline,
+                peak_computer,
+                peak_values,
+                peak_positions,
+                peak_line,
+                peak_key,
             } = &mut *scratch;
             self.visualizer
                 .audio_service
@@ -468,6 +493,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 .min(fft_output_size);
             let bars_to_draw = displayed_bins.saturating_sub(skip);
             position_data.clear();
+            peak_values.clear();
             let key = SpectrumPositionKey {
                 sample_rate: current_source.sample_rate,
                 fft_size,
@@ -531,8 +557,38 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 last_px_pos = None;
 
                 position_data.push([gl_pos, plot_data.y_axis.gl_pos(v)]);
+                if settings.peaks.enabled {
+                    peak_values.push(v);
+                }
 
                 bars_drawn += 1;
+            }
+
+            peak_positions.clear();
+            if settings.peaks.enabled {
+                let identity = (
+                    current_source.sample_rate,
+                    fft_size,
+                    settings.freq_min,
+                    settings.freq_max,
+                    settings.frequency_axis_logarithmic,
+                    info.viewport.width().to_bits(),
+                );
+                if *peak_key != Some(identity) {
+                    peak_computer.reset();
+                    *peak_key = Some(identity);
+                }
+                settings.peaks.configure(peak_computer);
+                let peaks = peak_computer.compute_peaks(delta_t.as_secs_f32(), peak_values);
+                peak_positions.extend(
+                    position_data
+                        .iter()
+                        .zip(peaks)
+                        .map(|(p, value)| [p[0], plot_data.y_axis.gl_pos(*value)]),
+                );
+            } else {
+                peak_computer.reset();
+                *peak_key = None;
             }
 
             crate::upload_uniform_if_changed!(
@@ -586,7 +642,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
                 render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
                 render_pass.set_pipeline(&resources.line_fill_pipeline);
-                render_pass.draw(0..6u32, 0..(count - 1));
+                render_pass.draw(0..6u32, 0..count);
 
                 if position_data.len() >= 2 {
                     let viewport = [
@@ -629,6 +685,46 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.set_vertex_buffer(1, resources.instance_buffer.slice(..));
                 render_pass.set_pipeline(&resources.bars_pipeline);
                 render_pass.draw(0..6u32, 0..count);
+            }
+            if settings.peaks.enabled && peak_positions.len() >= 2 {
+                let viewport = [
+                    info.viewport.width() * info.pixels_per_point,
+                    info.viewport.height() * info.pixels_per_point,
+                ];
+                if settings.draw_type == SpectrumVisualizerType::Line {
+                    if settings.smooth_line {
+                        let px_width = 2.0 / viewport[0];
+                        catmull_rom_spline_into(
+                            peak_positions,
+                            SPLINE_SAMPLES_PER_PIXEL,
+                            px_width,
+                            MIN_SMOOTHED_WIDTH * px_width,
+                            spline_padding,
+                            spline_output,
+                        );
+                        std::mem::swap(peak_positions, spline_output);
+                    }
+                    peak_line.thin_polyline(peak_positions, viewport);
+                } else {
+                    peak_line.segments.clear();
+                    peak_line
+                        .segments
+                        .extend(peak_positions.windows(2).map(|w| {
+                            crate::ui::aa_line::Segment::horizontal_cap(w[0][0], w[1][0], w[0][1])
+                        }));
+                }
+                resources
+                    .peak_line
+                    .upload(&resources.queue, &peak_line.segments);
+                resources.peak_line.configure(
+                    &resources.queue,
+                    peak_uniform_uploads,
+                    self.highlight_color.to_normalized_gamma_f32(),
+                    viewport,
+                );
+                resources
+                    .peak_line
+                    .draw(render_pass, peak_line.segments.len());
             }
         }
     }

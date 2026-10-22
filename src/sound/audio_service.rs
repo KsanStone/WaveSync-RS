@@ -39,6 +39,7 @@ impl AudioService {
                 buffer
             })),
             latest_fft: Mutex::new(std::array::from_fn(|_| vec![])),
+            fft_scratch: Mutex::new(FftScratch::default()),
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),
             samples_written: Default::default(),
             channel_samples_written: Default::default(),
@@ -113,6 +114,7 @@ pub struct Inner {
     pub available_sources: Mutex<Vec<CaptureSource>>,
     pub audio_buffer: Mutex<[Box<CircularBuffer<384000, f32>>; CHANNELS]>,
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
+    fft_scratch: Mutex<FftScratch>,
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
     samples_written: AtomicU64,
     channel_samples_written: [AtomicU64; CHANNELS],
@@ -126,7 +128,39 @@ pub struct Inner {
     loudness_meter: Mutex<Box<dyn LoudnessMeter>>,
 }
 
-// TODO: Ensure that we clone fft and audio buffers as little as possible.
+// FFT input/workspace and published outputs retain their capacity between transforms.
+#[derive(Default)]
+struct FftScratch {
+    input: Vec<Complex<f32>>,
+    workspace: Vec<Complex<f32>>,
+}
+
+impl FftScratch {
+    fn transform(
+        &mut self,
+        plan: &dyn rustfft::Fft<f32>,
+        samples: impl Iterator<Item = f32>,
+        window: &[f32],
+        scalar: f32,
+        output: &mut Vec<f32>,
+    ) {
+        self.input.clear();
+        self.input.extend(
+            samples
+                .zip(window)
+                .map(|(sample, weight)| Complex::new(sample * weight, 0.0)),
+        );
+        self.workspace
+            .resize(plan.get_inplace_scratch_len(), Complex::default());
+        plan.process_with_scratch(&mut self.input, &mut self.workspace);
+        output.clear();
+        output.extend(
+            self.input[..plan.len() / 2]
+                .iter()
+                .map(|value| value.norm() * scalar),
+        );
+    }
+}
 impl Inner {
     pub fn register_fft_listener(&self, listener: Box<dyn Visualizer>) {
         self.fft_listeners.lock().unwrap().push(listener);
@@ -164,7 +198,7 @@ impl Inner {
         }
     }
 
-    pub fn handle_samples(&self, samples: Vec<Vec<f32>>) {
+    pub fn handle_samples(&self, samples: &[Vec<f32>]) {
         if samples.is_empty() {
             return;
         }
@@ -184,7 +218,7 @@ impl Inner {
             let scalar = 1.0 / channels as f32;
             for i in 0..samples[0].len() {
                 let mut v = 0.0;
-                for item in &samples {
+                for item in samples {
                     v += item[i];
                 }
                 buffer[0].push_back(v * scalar);
@@ -204,7 +238,7 @@ impl Inner {
             .fetch_add(samples[0].len() as u64, Ordering::Release);
         drop(buffer);
         self.do_fft(fft_channels);
-        self.do_loudness_calc(&samples);
+        self.do_loudness_calc(samples);
     }
 
     fn do_loudness_calc(&self, samples: &[Vec<f32>]) {
@@ -225,6 +259,7 @@ impl Inner {
         let audio_buffer = self.audio_buffer.lock().unwrap();
         let fft_plan = self.fft_plan.lock().unwrap();
         let mut fft_window = self.fft_window.lock().unwrap();
+        let mut scratch = self.fft_scratch.lock().unwrap();
         let mut fft_peaks = self.fft_peaks.lock().unwrap();
         let current_capture_source = self.current_capture_source.lock().unwrap();
         let listeners = self.fft_listeners.lock().unwrap();
@@ -251,19 +286,13 @@ impl Inner {
                 let sample_iter = audio_buffer[i].range(start_idx..end_idx);
                 let (window_scalar, window) = fft_window.get_window(fft_plan.len());
 
-                let mut fft_in = sample_iter
-                    .enumerate()
-                    .map(|(i, sample)| Complex::new(*sample * window[i], 0.0f32))
-                    .collect::<Vec<_>>();
-                fft_plan.process(&mut fft_in);
-
-                let mut magnitudes = fft_in[0..fft_plan.len() / 2]
-                    .iter()
-                    .map(|x| x.norm())
-                    .collect::<Vec<_>>();
-
-                magnitudes.iter_mut().for_each(|x| *x *= window_scalar);
-                latest_fft[i] = magnitudes;
+                scratch.transform(
+                    fft_plan.as_ref(),
+                    sample_iter.copied(),
+                    window,
+                    window_scalar,
+                    &mut latest_fft[i],
+                );
             }
             self.last_fft_idx.store(last_fft_idx, Ordering::Release);
             listeners.iter().for_each(|listener| {
@@ -443,5 +472,54 @@ impl Inner {
     pub fn get_loudness_unit(&self) -> &'static str {
         let meter = self.loudness_meter.lock().unwrap();
         meter.unit()
+    }
+}
+
+#[cfg(test)]
+mod fft_scratch_tests {
+    use super::*;
+
+    #[test]
+    fn reused_fft_matches_original_transform_across_plan_changes() {
+        let mut planner = FftPlanner::new();
+        let mut scratch = FftScratch::default();
+        let mut output = Vec::new();
+        for size in [64, 128, 64] {
+            let plan = planner.plan_fft_forward(size);
+            let samples: Vec<_> = (0..size).map(|i| (i as f32 * 0.23).sin()).collect();
+            let window: Vec<_> = (0..size)
+                .map(|i| 0.5 - 0.5 * (i as f32 * 0.1).cos())
+                .collect();
+            let mut reference: Vec<_> = samples
+                .iter()
+                .zip(&window)
+                .map(|(s, w)| Complex::new(s * w, 0.0))
+                .collect();
+            plan.process(&mut reference);
+            scratch.transform(
+                plan.as_ref(),
+                samples.iter().copied(),
+                &window,
+                0.25,
+                &mut output,
+            );
+            for (actual, expected) in output.iter().zip(&reference[..size / 2]) {
+                assert!((actual - expected.norm() * 0.25).abs() < 1e-5);
+            }
+            let input_ptr = scratch.input.as_ptr();
+            let workspace_ptr = scratch.workspace.as_ptr();
+            let output_ptr = output.as_ptr();
+            scratch.transform(
+                plan.as_ref(),
+                samples.iter().copied(),
+                &window,
+                0.25,
+                &mut output,
+            );
+            assert_eq!(scratch.input.as_ptr(), input_ptr);
+            assert_eq!(scratch.workspace.as_ptr(), workspace_ptr);
+            assert_eq!(output.as_ptr(), output_ptr);
+            assert_eq!(output.len(), size / 2);
+        }
     }
 }
