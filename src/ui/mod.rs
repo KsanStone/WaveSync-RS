@@ -4,13 +4,13 @@ use egui_wgpu::ScreenDescriptor;
 use egui_wgpu::wgpu;
 use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 
+pub(crate) mod aa_line;
 pub mod gradient;
 pub mod loudness_indicator;
 pub mod plot;
 pub(crate) mod uniform_upload;
 pub(crate) mod vec_cache;
 pub mod visualizer;
-pub(crate) mod aa_line;
 
 #[macro_export]
 macro_rules! deref_arc {
@@ -349,7 +349,7 @@ pub fn catmull_rom_spline_into(
             break;
         }
 
-        let samples_per_segment = ((seg_width / px_width) * px_per_point).max(1.0).round() as usize;
+        let samples_per_segment = ((seg_width / px_width) * px_per_point).max(1.0).floor() as usize;
 
         for j in 1..=samples_per_segment {
             let t = j as f32 / samples_per_segment as f32;

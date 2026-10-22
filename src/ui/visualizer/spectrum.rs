@@ -26,20 +26,8 @@ use std::time::Instant;
 
 pub const MAX_BARS: u64 = 4096;
 pub const MIN_BAR_WIDTH: f32 = 1.0;
-pub const MIN_SMOOTHED_WIDTH: f32 = 4.0;
-
-/// The spline smooths a contiguous prefix, stopping at the first narrow bucket.
-/// Return its last source endpoint, additionally requiring >2 physical pixels.
-fn smoothed_outline_end(points: &[[f32; 2]], width: f32, pixels_per_point: f32) -> Option<f32> {
-    points
-        .windows(2)
-        .take_while(|pair| {
-            let bucket_width = (pair[1][0] - pair[0][0]).abs() * width * 0.5;
-            bucket_width >= MIN_SMOOTHED_WIDTH && bucket_width * pixels_per_point > 2.0
-        })
-        .last()
-        .map(|pair| pair[1][0])
-}
+pub const MIN_SMOOTHED_WIDTH: f32 = 2.0;
+const SPLINE_SAMPLES_PER_PIXEL: f32 = 1.0;
 
 deref_arc!(SpectrumVisualizer);
 
@@ -135,7 +123,9 @@ impl SpectrumVisualizer {
 }
 
 impl Visualizer for SpectrumVisualizer {
-    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 48.0) }
+    fn min_canvas_size(&self) -> egui::Vec2 {
+        egui::vec2(64.0, 48.0)
+    }
 
     fn get_plot_data(&self) -> PlotData {
         let settings = &self.data.read().unwrap().spectrum_settings;
@@ -253,7 +243,6 @@ struct BarInstanceData {
 
 struct RenderResources {
     bars_pipeline: wgpu::RenderPipeline,
-    line_pipeline: wgpu::RenderPipeline,
     line_fill_pipeline: wgpu::RenderPipeline,
     outline: AaLines,
     vertex_buffer: wgpu::Buffer,
@@ -291,8 +280,6 @@ impl CallbackTrait for SpectrumVisualizerCallback {
 
             let bar_shader =
                 create_shader!(device, "bar shader", "../../../shader/instanced_bars.wgsl");
-            let line_shader =
-                create_shader!(device, "line shader", "../../../shader/colored_line.wgsl");
             let line_fill_shader =
                 create_shader!(device, "lf", "../../../shader/instanced_line_fill.wgsl");
 
@@ -366,14 +353,6 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                         },
                     ],
                     "spectrum_bar_pipeline",
-                ),
-                line_pipeline: create_pipeline(
-                    device,
-                    &line_shader,
-                    &pipeline_layout,
-                    wgpu::PrimitiveTopology::LineList,
-                    &[VERTEX_2D_BUFFER_LAYOUT],
-                    "spectrum_line_pipeline",
                 ),
                 line_fill_pipeline: create_pipeline(
                     device,
@@ -574,22 +553,11 @@ impl CallbackTrait for SpectrumVisualizerCallback {
             }
 
             if settings.draw_type == SpectrumVisualizerType::Line {
-                let px_width = 2.0 / info.viewport.width();
-                // Classify source buckets BEFORE spline subdivision. Subdivided
-                // curve segments are tiny even when the source bucket is wide.
-                let aa_end = if settings.smooth_line {
-                    smoothed_outline_end(
-                        position_data,
-                        info.viewport.width(),
-                        info.pixels_per_point,
-                    )
-                } else {
-                    None
-                };
+                let px_width = 2.0 / (info.viewport.width() * info.pixels_per_point);
                 if settings.smooth_line {
                     catmull_rom_spline_into(
                         position_data,
-                        MIN_SMOOTHED_WIDTH,
+                        SPLINE_SAMPLES_PER_PIXEL,
                         px_width,
                         MIN_SMOOTHED_WIDTH * px_width,
                         spline_padding,
@@ -620,27 +588,12 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.set_pipeline(&resources.line_fill_pipeline);
                 render_pass.draw(0..6u32, 0..(count - 1));
 
-                let segment_count = count.saturating_sub(1) as usize;
-                let aa_count = aa_end.map_or(0, |end| {
-                    position_data
-                        .partition_point(|p| p[0] <= end)
-                        .saturating_sub(1)
-                        .min(segment_count)
-                });
-                // Share the exact endpoint between the AA prefix and dense,
-                // native one-pixel tail. The fill uses the unchanged full buffer.
-                if aa_count < segment_count {
-                    let offset = (aa_count * 2 * size_of::<[f32; 2]>()) as u64;
-                    render_pass.set_vertex_buffer(0, resources.instance_buffer.slice(offset..));
-                    render_pass.set_pipeline(&resources.line_pipeline);
-                    render_pass.draw(0..((segment_count - aa_count) * 2) as u32, 0..1);
-                }
-                if aa_count > 0 {
+                if position_data.len() >= 2 {
                     let viewport = [
                         info.viewport.width() * info.pixels_per_point,
                         info.viewport.height() * info.pixels_per_point,
                     ];
-                    outline.polyline(&position_data[..=aa_count], viewport);
+                    outline.thin_polyline(position_data, viewport);
                     resources
                         .outline
                         .upload(&resources.queue, &outline.segments);
@@ -678,24 +631,5 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 render_pass.draw(0..6u32, 0..count);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod outline_tests {
-    use super::*;
-    #[test]
-    fn aa_stops_where_source_buckets_stop_being_smoothed() {
-        let points = [
-            [-1.0, 0.0],
-            [-0.5, 0.0],
-            [-0.4, 0.0],
-            [-0.39, 0.0],
-            [1.0, 0.0],
-        ];
-        assert_eq!(smoothed_outline_end(&points, 100.0, 1.0), Some(-0.4));
-        assert_eq!(smoothed_outline_end(&points, 10.0, 1.0), None);
-        assert_eq!(smoothed_outline_end(&points, 100.0, 0.1), Some(-0.5));
-        assert_eq!(smoothed_outline_end(&[], 100.0, 1.0), None);
     }
 }

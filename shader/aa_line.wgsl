@@ -19,6 +19,7 @@ struct Output {
     @location(1) @interpolate(flat) segment_length: f32,
     @location(2) @interpolate(flat) weight: f32,
     @location(3) @interpolate(flat) flags: u32,
+    @location(4) @interpolate(flat) neighbours: vec4<f32>,
 };
 @vertex
 fn vs_main(input: Input, @builtin(vertex_index) index: u32) -> Output {
@@ -48,13 +49,35 @@ fn vs_main(input: Input, @builtin(vertex_index) index: u32) -> Output {
     out.segment_length = segment_length;
     out.weight = input.weight;
     out.flags = input.flags;
+    out.neighbours = vec4(0.0);
+    if (input.flags & 8u) != 0u {
+        let previous = (input.start_normal - input.start) * uniforms.viewport * 0.5;
+        let next = (input.end_normal - input.start) * uniforms.viewport * 0.5;
+        out.neighbours = vec4(dot(previous, tangent), dot(previous, normal),
+                              dot(next, tangent), dot(next, normal));
+    }
     return out;
+}
+fn segment_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let delta = b - a;
+    let t = clamp(dot(p - a, delta) / max(dot(delta, delta), 1e-12), 0.0, 1.0);
+    return length(p - a - delta * t);
 }
 fn coverage(input: Output) -> f32 {
     var distance = abs(input.local.y);
     if (input.flags & 1u) != 0u {
         let along = max(max(-input.local.x, input.local.x - input.segment_length), 0.0);
         distance = length(vec2(along, input.local.y));
+    }
+    if (input.flags & 8u) != 0u {
+        // Resolve overlapping caps as a union, not repeated alpha deposits.
+        // Previous wins ties; next loses them, so shared coverage is drawn once.
+        if (input.flags & 16u) != 0u {
+            if segment_distance(input.local, input.neighbours.xy, vec2(0.0)) <= distance { discard; }
+        }
+        if (input.flags & 32u) != 0u {
+            if segment_distance(input.local, vec2(input.segment_length, 0.0), input.neighbours.zw) < distance { discard; }
+        }
     }
     var value = clamp(uniforms.half_width + 0.5 - distance, 0.0, 1.0);
     if (input.flags & 2u) != 0u { value = min(value, clamp(input.local.x + 0.5, 0.0, 1.0)); }

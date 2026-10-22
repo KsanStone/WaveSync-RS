@@ -46,7 +46,55 @@ fn normal(start: [f32; 2], end: [f32; 2], size: [f32; 2]) -> Option<[f32; 2]> {
     let length = x.hypot(y);
     (length > 1e-6 && length.is_finite()).then(|| [-y / length, x / length])
 }
+fn joined_quad_is_safe(
+    start: [f32; 2],
+    end: [f32; 2],
+    a: [f32; 2],
+    b: [f32; 2],
+    viewport: [f32; 2],
+) -> bool {
+    let delta = [
+        (end[0] - start[0]) * viewport[0] * 0.5,
+        (end[1] - start[1]) * viewport[1] * 0.5,
+    ];
+    let length = delta[0].hypot(delta[1]);
+    if length < 1e-5 || !length.is_finite() {
+        return false;
+    }
+    let tangent = [delta[0] / length, delta[1] / length];
+    let normal = [-tangent[1], tangent[0]];
+    let dot = |v: [f32; 2], axis: [f32; 2]| v[0] * axis[0] + v[1] * axis[1];
+    // The shader's expanded stroke radius is one physical pixel.
+    dot(a, normal) >= 0.999
+        && dot(b, normal) >= 0.999
+        && dot(a, tangent).abs() + dot(b, tangent).abs() < length
+}
+
 impl LineScratch {
+    /// Round strokes with nearest-neighbour ownership of overlapping coverage.
+    /// Unlike alpha-blending every cap, subdivision does not brighten joins.
+    pub fn thin_polyline(&mut self, points: &[[f32; 2]], viewport: [f32; 2]) {
+        self.segments.clear();
+        for (i, pair) in points.windows(2).enumerate() {
+            if !pair.iter().flatten().all(|v| v.is_finite())
+                || normal(pair[0], pair[1], viewport).is_none()
+            {
+                continue;
+            }
+            let mut segment = Segment::independent(pair[0], pair[1], 1.0);
+            segment.start_normal = if i > 0 { points[i - 1] } else { pair[0] };
+            segment.end_normal = points.get(i + 2).copied().unwrap_or(pair[1]);
+            segment.flags |= 8;
+            if i > 0 && normal(points[i - 1], pair[0], viewport).is_some() {
+                segment.flags |= 16;
+            }
+            if i + 2 < points.len() && normal(pair[1], points[i + 2], viewport).is_some() {
+                segment.flags |= 32;
+            }
+            self.segments.push(segment);
+        }
+    }
+
     pub fn polyline(&mut self, points: &[[f32; 2]], viewport: [f32; 2]) {
         profiling::scope!("aa_line.build_polyline");
         self.segments.clear();
@@ -84,6 +132,21 @@ impl LineScratch {
         }
         for (i, pair) in points.windows(2).enumerate() {
             if !pair.iter().flatten().all(|x| x.is_finite()) {
+                continue;
+            }
+            // A bounded miter can collapse perpendicular coverage at an acute
+            // reversal. On short segments the two miters can also cross, folding
+            // the quad so its triangles no longer cover the centerline.
+            // Use an analytic round-capped segment for these cases instead.
+            if !joined_quad_is_safe(
+                pair[0],
+                pair[1],
+                self.normals[i],
+                self.normals[i + 1],
+                viewport,
+            ) {
+                self.segments
+                    .push(Segment::independent(pair[0], pair[1], 1.0));
                 continue;
             }
             self.segments.push(Segment {
@@ -273,6 +336,28 @@ mod tests {
         );
     }
     #[test]
+    fn dense_reversals_keep_full_stroke_coverage() {
+        let mut scratch = LineScratch::default();
+        // Subpixel-spaced FFT / waveform samples with steep alternating peaks.
+        scratch.polyline(
+            &[[-0.01, -0.9], [0.0, 0.9], [0.001, -0.9], [0.002, 0.9]],
+            [800.0, 400.0],
+        );
+        assert_eq!(scratch.segments.len(), 3);
+        assert!(scratch.segments.iter().any(|s| s.flags == 1));
+        assert!(scratch.segments.iter().all(|s| s.flags == 1
+            || joined_quad_is_safe(s.start, s.end, s.start_normal, s.end_normal, [800.0, 400.0])));
+        // Even an unclamped right-angle miter folds a short segment's quad.
+        assert!(!joined_quad_is_safe(
+            [0.0, 0.0],
+            [0.001, 0.0],
+            [1.0, 1.0],
+            [-1.0, 1.0],
+            [800.0, 400.0]
+        ));
+    }
+
+    #[test]
     fn fixed_energy_accounts_for_length_and_round_caps() {
         for length in [0.0, 0.1, 1.0, 100.0] {
             let segment =
@@ -409,6 +494,259 @@ mod gpu_tests {
                 alpha.iter().filter(|&&a| a != 0).count() < 150,
                 "thin strokes should remain narrow"
             );
+            drop(mapped);
+            readback.unmap();
+            assert!(
+                device.pop_error_scope().await.is_none(),
+                "AA pipelines must validate on the app's GL backend"
+            );
+        });
+    }
+    #[test]
+    #[ignore = "requires a GL adapter; run explicitly with --ignored"]
+    fn dense_steep_polyline_has_no_missing_rows() {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::GL,
+                ..Default::default()
+            });
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+                .expect("GL adapter for AA validation");
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let lines = AaLines::new(&device, 4, Target::Color);
+            let _intensity = AaLines::new(&device, 4, Target::Intensity);
+            let mut scratch = LineScratch::default();
+            scratch.thin_polyline(
+                &[[-0.01, -0.9], [0.0, 0.9], [0.001, -0.9], [0.002, 0.9]],
+                [32.0, 32.0],
+            );
+            lines.upload(&queue, &scratch.segments);
+            lines.configure(
+                &queue,
+                &UniformUploads::default(),
+                [1.0, 0.0, 0.0, 1.0],
+                [32.0, 32.0],
+            );
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("AA test target"),
+                size: wgpu::Extent3d {
+                    width: 32,
+                    height: 32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256 * 32,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                lines.draw(&mut pass, scratch.segments.len());
+            }
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(32),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 32,
+                    height: 32,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit(Some(encoder.finish()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                tx.send(r).unwrap();
+            });
+            device.poll(wgpu::PollType::Wait).unwrap();
+            rx.recv().unwrap().unwrap();
+            let mapped = readback.slice(..).get_mapped_range();
+            let alpha: Vec<_> = (0..32)
+                .flat_map(|row| {
+                    mapped[row * 256..row * 256 + 128]
+                        .chunks_exact(4)
+                        .map(|pixel| pixel[3])
+                })
+                .collect();
+            assert!(
+                alpha.iter().any(|&a| a > 0 && a < 255),
+                "AA must produce partial pixel coverage"
+            );
+            assert!(
+                alpha.iter().filter(|&&a| a != 0).count() < 150,
+                "thin strokes should remain narrow"
+            );
+            for row in 2..30 {
+                assert!(
+                    (14..18).any(|x| alpha[row * 32 + x] > 0),
+                    "missing dense stroke at row {row}"
+                );
+            }
+            drop(mapped);
+            readback.unmap();
+            assert!(
+                device.pop_error_scope().await.is_none(),
+                "AA pipelines must validate on the app's GL backend"
+            );
+        });
+    }
+    #[test]
+    #[ignore = "requires a GL adapter; run explicitly with --ignored"]
+    fn subdividing_thin_stroke_does_not_accumulate_opacity() {
+        pollster::block_on(async {
+            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::GL,
+                ..Default::default()
+            });
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions::default())
+                .await
+                .expect("GL adapter for AA validation");
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor {
+                    required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let lines = AaLines::new(&device, 64, Target::Color);
+            let _intensity = AaLines::new(&device, 4, Target::Intensity);
+            let mut scratch = LineScratch::default();
+            let points: Vec<_> = (0..=64)
+                .map(|i| [-0.8 + 1.6 * i as f32 / 64.0, 0.03])
+                .collect();
+            scratch.thin_polyline(&points, [32.0, 32.0]);
+            lines.upload(&queue, &scratch.segments);
+            lines.configure(
+                &queue,
+                &UniformUploads::default(),
+                [1.0, 0.0, 0.0, 1.0],
+                [32.0, 32.0],
+            );
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("AA test target"),
+                size: wgpu::Extent3d {
+                    width: 32,
+                    height: 32,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                label: None,
+                size: 256 * 32,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                });
+                lines.draw(&mut pass, scratch.segments.len());
+            }
+            encoder.copy_texture_to_buffer(
+                texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &readback,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256),
+                        rows_per_image: Some(32),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: 32,
+                    height: 32,
+                    depth_or_array_layers: 1,
+                },
+            );
+            queue.submit(Some(encoder.finish()));
+            let (tx, rx) = std::sync::mpsc::channel();
+            readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                tx.send(r).unwrap();
+            });
+            device.poll(wgpu::PollType::Wait).unwrap();
+            rx.recv().unwrap().unwrap();
+            let mapped = readback.slice(..).get_mapped_range();
+            let alpha: Vec<_> = (0..32)
+                .flat_map(|row| {
+                    mapped[row * 256..row * 256 + 128]
+                        .chunks_exact(4)
+                        .map(|pixel| pixel[3])
+                })
+                .collect();
+            assert!(
+                alpha.iter().any(|&a| a > 0 && a < 255),
+                "AA must produce partial pixel coverage"
+            );
+            assert!(
+                alpha.iter().filter(|&&a| a != 0).count() < 150,
+                "thin strokes should remain narrow"
+            );
+            for x in 5..27 {
+                let sum: u32 = (0..32).map(|row| alpha[row * 32 + x] as u32).sum();
+                assert!(
+                    (250..=260).contains(&sum),
+                    "subdivision changed stroke opacity at {x}: {sum}"
+                );
+            }
             drop(mapped);
             readback.unmap();
             assert!(
