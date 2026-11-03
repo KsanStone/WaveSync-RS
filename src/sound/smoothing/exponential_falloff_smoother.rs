@@ -41,13 +41,19 @@ impl FloatArraySmoother for ExponentialFalloffSmoother {
         let f = (self.factor * 30.0).clamp(0.0, 30.0);
         let dt = delta_t.clamp(0.0, 1.0);
 
-        for (i, item) in self.current_state.iter_mut().enumerate() {
-            if recent_data[i] > *item {
-                *item = recent_data[i];
-                self.falloff_speed[i] = 0.0;
+        let increment = f * dt;
+        for ((item, speed), &recent) in self
+            .current_state
+            .iter_mut()
+            .zip(&mut self.falloff_speed)
+            .zip(recent_data)
+        {
+            if recent > *item {
+                *item = recent;
+                *speed = 0.0;
             } else {
-                *item = (*item - (self.falloff_speed[i] * dt * *item)).clamp(0.0, 1.0);
-                self.falloff_speed[i] += f * dt;
+                *item = (*item - (*speed * dt * *item)).clamp(0.0, 1.0);
+                *speed += increment;
             }
         }
 

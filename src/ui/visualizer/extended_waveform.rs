@@ -22,7 +22,8 @@ use std::time::Instant;
 deref_arc!(ExtendedWaveformVisualizer);
 
 const MAX_RESOLUTION: usize = 8192;
-const GUARD_COLUMNS: usize = 256;
+// Reserve about 8% of the history without changing the visible span as delay adapts.
+const GUARD_COLUMNS: usize = MAX_RESOLUTION * 8 / 100;
 
 pub struct Inner {
     audio_service: AudioService,
@@ -82,7 +83,9 @@ struct Uniforms {
 }
 
 impl Visualizer for ExtendedWaveformVisualizer {
-    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 24.0) }
+    fn min_canvas_size(&self) -> egui::Vec2 {
+        egui::vec2(64.0, 24.0)
+    }
 
     fn get_plot_data(&self) -> PlotData {
         let range = self.data.read().unwrap().extended_waveform_settings.range;
@@ -272,6 +275,7 @@ impl CallbackTrait for ExtendedWaveformVisualizerCallback {
                 cache.clock_key = Some(key);
                 cache.scroll = Default::default();
                 cache.last_paint = None;
+                cache.trace = Default::default();
             }
             let now = Instant::now();
             let dt = cache
@@ -288,9 +292,24 @@ impl CallbackTrait for ExtendedWaveformVisualizerCallback {
                 GUARD_COLUMNS,
             );
             let viewport_width = (info.viewport.width() * info.pixels_per_point).max(1.0);
-            let grid_step =
-                ((cache.columns.len - GUARD_COLUMNS - 1) as f64 / viewport_width as f64).max(1.0);
-            let grid_origin = ((written / chunk as u64) as f64).rem_euclid(grid_step) as f32;
+            if log::log_enabled!(target: "waveform_scroll", log::Level::Debug)
+                && let Some(cursor) = cache.scroll.position()
+            {
+                let pixels_per_sample = viewport_width as f64
+                    / ((cache.columns.len - GUARD_COLUMNS - 1).max(1) * chunk) as f64;
+                cache.trace.record(
+                    now,
+                    dt,
+                    written,
+                    cursor,
+                    source.sample_rate,
+                    pixels_per_sample,
+                );
+            }
+            let grid_step = ((cache.columns.len - GUARD_COLUMNS - 1) as f32 / viewport_width)
+                .ceil()
+                .max(1.0) as u64;
+            let grid_origin = (written / chunk as u64 % grid_step) as f32;
             crate::upload_uniform_if_changed!(
                 cache.uniform_uploads,
                 "extended_waveform.uniforms",
@@ -319,10 +338,60 @@ impl CallbackTrait for ExtendedWaveformVisualizerCallback {
     }
 }
 
+/// Opt-in, once-per-second diagnostics. Never logs from the capture callback.
+#[derive(Default)]
+struct ScrollTrace {
+    previous: Option<(u64, f64)>,
+    since: Option<Instant>,
+    frames: u32,
+    max_frame_ms: f64,
+    max_publication_ms: f64,
+    max_motion_px: f64,
+    max_clock_error_px: f64,
+}
+
+impl ScrollTrace {
+    fn record(
+        &mut self,
+        now: Instant,
+        dt: f64,
+        written: u64,
+        cursor: f64,
+        rate: u32,
+        px_per_sample: f64,
+    ) {
+        let Some((last_written, last_cursor)) = self.previous.replace((written, cursor)) else {
+            return;
+        };
+        let since = *self.since.get_or_insert(now);
+        let motion = (cursor - last_cursor) * px_per_sample;
+        self.frames += 1;
+        self.max_frame_ms = self.max_frame_ms.max(dt * 1000.0);
+        self.max_publication_ms = self
+            .max_publication_ms
+            .max(written.saturating_sub(last_written) as f64 * 1000.0 / rate.max(1) as f64);
+        self.max_motion_px = self.max_motion_px.max(motion.abs());
+        self.max_clock_error_px = self
+            .max_clock_error_px
+            .max((motion - dt * rate as f64 * px_per_sample).abs());
+        if now.duration_since(since).as_secs_f64() >= 1.0 {
+            log::debug!(target: "waveform_scroll",
+                "{rate} Hz, {} frames: max frame interval {:.1} ms, publication step {:.1} ms of audio, motion {:.2} px, deviation from frame-time motion {:.2} px",
+                self.frames, self.max_frame_ms, self.max_publication_ms, self.max_motion_px, self.max_clock_error_px);
+            *self = Self {
+                previous: self.previous,
+                since: Some(now),
+                ..Self::default()
+            };
+        }
+    }
+}
+
 #[derive(Default)]
 struct WaveformCache {
     columns: ColumnCache,
     scroll: SampleScroll,
+    trace: ScrollTrace,
     last_paint: Option<Instant>,
     clock_key: Option<(usize, u32)>,
     uniform_uploads: crate::ui::uniform_upload::UniformUploads,
@@ -450,8 +519,8 @@ mod gpu_tests {
             });
             let base = [-0.2f32, 0.2, 0.01, 0.0];
             let mut reference = None;
-            let step = 47.0f32 / 17.0;
-            let start = 13.0 * step - 39.5;
+            let step = (47.0f32 / 17.0).ceil();
+            let start = 12.0 * step - 39.5;
             let mut temporal_alpha = Vec::new();
             for (head, remove_peak, scroll, origin, peak, temporal) in [
                 (0, false, -1.25, 0.0, 38, false),
@@ -460,6 +529,7 @@ mod gpu_tests {
                 // Advance the history origin while keeping the display clock
                 // fixed: the rendered image must remain exactly the same.
                 (1, false, -2.25, 1.0, 37, false),
+                (4, false, -5.25, 1.0, 34, false),
                 (0, false, start, 0.0, 38, true),
                 (0, false, start + step * 0.5, 0.0, 38, true),
                 (0, false, start + step, 0.0, 38, true),

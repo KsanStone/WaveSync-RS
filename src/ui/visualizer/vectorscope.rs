@@ -544,7 +544,9 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                 );
                 if left_data.len() == to_read && right_data.len() == to_read && to_read > 1 {
                     segments.clear();
-                    for i in 0..(to_read - 1) {
+                    for (i, energy) in
+                        segment_energies(retained, sample_rate, lambda, exposure).enumerate()
+                    {
                         let start = [
                             plot_data.x_axis.gl_pos(left_data[i]),
                             plot_data.y_axis.gl_pos(-right_data[i]),
@@ -554,8 +556,6 @@ impl PostEquiRender for VectorscopeVisualizerCallback {
                             plot_data.y_axis.gl_pos(-right_data[i + 1]),
                         ];
                         if start.iter().chain(end.iter()).all(|v| v.is_finite()) {
-                            let age = (retained - 1 - i) as f32 / sample_rate;
-                            let energy = exposure * (-lambda * age).exp();
                             segments.push(Segment::with_energy(start, end, energy, viewport));
                         }
                     }
@@ -654,6 +654,47 @@ mod exposure_tests {
             )
             .validate(&module)
             .unwrap();
+        }
+    }
+}
+
+/// Advance once per sample, including samples whose geometry is rejected.
+fn segment_energies(
+    count: usize,
+    sample_rate: f32,
+    lambda: f32,
+    exposure: f32,
+) -> impl Iterator<Item = f32> {
+    // f64 keeps multiplier rounding from accumulating across thousands of samples.
+    let step = (lambda as f64 / sample_rate as f64).exp();
+    let mut energy = exposure as f64
+        * (-(lambda as f64) * count.saturating_sub(1) as f64 / sample_rate as f64).exp();
+    (0..count).map(move |_| {
+        let value = energy as f32;
+        energy *= step;
+        value
+    })
+}
+
+#[cfg(test)]
+mod energy_tests {
+    use super::segment_energies;
+
+    #[test]
+    fn recurrence_matches_direct_decay_across_sample_rates_and_frame_sizes() {
+        let lambda = -0.8_f32.ln() * 60.0;
+        for rate in [22_050.0, 48_000.0, 192_000.0, 384_000.0] {
+            for count in [0, 1, 1333, 3200, 4096] {
+                for exposure in [0.0, 0.01, 1.0, 32.0] {
+                    let values: Vec<_> = segment_energies(count, rate, lambda, exposure).collect();
+                    assert_eq!(values.len(), count);
+                    for (i, &actual) in values.iter().enumerate() {
+                        let expected = exposure * (-lambda * ((count - 1 - i) as f32 / rate)).exp();
+                        assert!((actual - expected).abs() <= 2e-6 * exposure.max(1e-20));
+                    }
+                    assert!(values.windows(2).all(|w| w[0] <= w[1]));
+                }
+            }
         }
     }
 }

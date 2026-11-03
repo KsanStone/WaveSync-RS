@@ -1,0 +1,7 @@
+stereo 30fps max normalized bin difference: 0.00000000
+energy 30fps max abs difference: 0.000000060
+stereo 60fps max normalized bin difference: 0.00000000
+energy 60fps max abs difference: 0.000000060
+stereo 144fps max normalized bin difference: 0.00000000
+energy 144fps max abs difference: 0.000000060
+All numerical checks passed.

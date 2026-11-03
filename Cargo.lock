@@ -3807,6 +3807,7 @@ dependencies = [
  "catppuccin-egui",
  "circular-buffer",
  "cpal",
+ "crossbeam-channel",
  "directories-next",
  "ebur128",
  "egui",

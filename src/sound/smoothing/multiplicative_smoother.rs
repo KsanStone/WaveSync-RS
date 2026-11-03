@@ -42,8 +42,13 @@ impl FloatArraySmoother for MultiplicativeSmoother {
         let f = 1.0 - self.factor.clamp(0.0, 1.0);
         let dt = (delta_t * 100.0).clamp(0.0, 1.0);
 
-        for (i, item) in self.current_state.iter_mut().enumerate() {
-            *item = (*item + (recent_data[i] - *item) * f * dt).clamp(self.min, self.max);
+        let alpha = f * dt;
+        for (item, &recent) in self.current_state.iter_mut().zip(recent_data) {
+            *item = recent
+                .algebraic_sub(*item)
+                .algebraic_mul(alpha)
+                .algebraic_add(*item)
+                .clamp(self.min, self.max);
         }
 
         &self.current_state

@@ -64,7 +64,8 @@ fn fs_main(input: Output) -> @location(0) vec4<f32> {
     let span=f32(uniforms.count-uniforms.guard_columns-1u);
     let center=input.uv.x*span+f32(uniforms.guard_columns)+uniforms.scroll;
     let footprint=span/max(uniforms.viewport.x,1.0);
-    let step=max(footprint,1.0);
+    // Whole-column spacing keeps the grid phase exact as the ring advances.
+    let step=max(ceil(footprint),1.0);
     let pixel_position=(center+uniforms.grid_origin)/step;
     let base=floor(pixel_position)*step-uniforms.grid_origin;
     let y=(input.uv.y*2.0-1.0)*uniforms.range;

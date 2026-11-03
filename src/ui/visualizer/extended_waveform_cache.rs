@@ -10,12 +10,13 @@ impl Summary {
     pub fn scan<'a>(samples: impl Iterator<Item = &'a f32>) -> Self {
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
-        let mut sum_squares = 0.0;
+        let mut sum_squares = 0.0_f32;
         let mut count = 0;
         for &sample in samples {
             min = min.min(sample);
             max = max.max(sample);
-            sum_squares += sample * sample;
+            // Permit SIMD reduction without relaxing min/max behavior.
+            sum_squares = sum_squares.algebraic_add(sample.algebraic_mul(sample));
             count += 1;
         }
         if count == 0 {
@@ -106,8 +107,14 @@ impl ColumnCache {
 pub(super) struct SampleScroll {
     cursor: Option<f64>,
     previous_written: u64,
+    since_publication: f64,
+    publication_interval: f64,
 }
 impl SampleScroll {
+    pub fn position(&self) -> Option<f64> {
+        self.cursor
+    }
+
     pub fn offset(
         &mut self,
         written: u64,
@@ -119,21 +126,48 @@ impl SampleScroll {
     ) -> f32 {
         let newest = written as f64;
         let max_lag = guards.saturating_sub(2) as f64 * chunk as f64;
-        let delay = (2.0 * chunk as f64).max(batch as f64 * 2.0).min(max_lag);
+        let batch_seconds = batch as f64 / sample_rate.max(1) as f64;
+        if self.cursor.is_none() || written < self.previous_written || dt > 0.25 {
+            // Window moves and source resets are not audio jitter measurements.
+            self.since_publication = 0.0;
+            self.publication_interval = 0.0;
+        } else {
+            self.since_publication += dt.max(0.0);
+            // Fast attack, slow release: cover recent publication gaps without
+            // changing the delay every time a normal capture block arrives.
+            self.publication_interval = (self.publication_interval - dt.max(0.0) * 0.005)
+                .max(self.since_publication.min(0.080));
+            if written != self.previous_written {
+                self.since_publication = 0.0;
+            }
+        }
+        let reserve = (self.publication_interval + batch_seconds)
+            .max(0.020 + batch_seconds)
+            .max(2.0 * batch_seconds)
+            .min(0.080);
+        let delay = (2.0 * chunk as f64)
+            .max(reserve * sample_rate as f64)
+            .min(max_lag * 0.75);
         let target = newest - delay;
         let cursor = self.cursor.get_or_insert(target);
         if written < self.previous_written
             || dt > 0.25
             || (newest - *cursor).abs() > max_lag + batch as f64
         {
+            profiling::scope!("extended_waveform.scroll_reset");
             *cursor = target;
         } else {
-            let previous = *cursor;
-            *cursor += dt.max(0.0) * sample_rate as f64;
-            *cursor += (target - *cursor) * (1.0 - (-dt.max(0.0) * 2.0).exp());
-            *cursor = cursor.max(previous);
+            let advance = dt.max(0.0) * sample_rate as f64;
+            let predicted = *cursor + advance;
+            // Correct clock drift slowly without turning block arrivals into speed changes.
+            let limit = advance * 0.01;
+            let correction = (target - predicted) * (1.0 - (-dt.max(0.0) * 2.0).exp());
+            *cursor = predicted + correction.clamp(-limit, limit);
         }
-        *cursor = cursor.clamp(newest - max_lag, newest);
+        if *cursor < newest - max_lag || *cursor > newest {
+            profiling::scope!("extended_waveform.scroll_clamp");
+            *cursor = cursor.clamp(newest - max_lag, newest);
+        }
         self.previous_written = written;
         ((written % chunk as u64) as f64 / chunk as f64 + (*cursor - newest) / chunk as f64) as f32
     }
@@ -214,6 +248,47 @@ mod tests {
         buffer.fill(0.0);
         assert_eq!(verify(&mut cache, &mut gpu, &buffer, 0), 7);
     }
+    #[test]
+    fn adaptive_reserve_tracks_publication_gaps_but_ignores_window_drag() {
+        let mut scroll = SampleScroll::default();
+        scroll.offset(0, 47, 192000, 1920, 0.0, 655);
+        for _ in 0..8 {
+            scroll.offset(0, 47, 192000, 1920, 0.005, 655);
+        }
+        assert!((scroll.publication_interval - 0.040).abs() < 1e-9);
+        scroll.offset(153600, 47, 192000, 1920, 0.8, 655);
+        assert_eq!(scroll.publication_interval, 0.0);
+    }
+
+    #[test]
+    fn worker_publication_bursts_do_not_make_192khz_scroll_stall_or_jump() {
+        for batch in [256_u64, 512, 1024, 2048] {
+            let mut scroll = SampleScroll::default();
+            let mut previous = None;
+            for frame in 0..1200_u64 {
+                // A 240 Hz renderer observes a worker stalling for five frames
+                // (20.8 ms), then publishing its accumulated blocks together.
+                let phase = frame % 24;
+                let published_frame = if (8..=12).contains(&phase) {
+                    frame - (phase - 7)
+                } else {
+                    frame
+                };
+                let written = published_frame * 800 / batch * batch;
+                let offset = scroll.offset(written, 47, 192000, batch, 1.0 / 240.0, 256);
+                let position = (written / 47) as f64 + offset as f64;
+                if frame > 240 {
+                    let advance = (position - previous.unwrap()) * 47.0;
+                    assert!(
+                        (791.9..=808.1).contains(&advance),
+                        "batch {batch}, frame {frame}: advance {advance}"
+                    );
+                }
+                previous = Some(position);
+            }
+        }
+    }
+
     #[test]
     fn larger_audio_blocks_do_not_force_clock_jumps() {
         for batch in [256, 512, 1024, 2048] {

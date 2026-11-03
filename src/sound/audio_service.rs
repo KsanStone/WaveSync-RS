@@ -1,4 +1,5 @@
 use crate::deref_arc;
+use crate::sound::audio_worker::AudioWorker;
 use crate::sound::capture_source::CaptureSource;
 use crate::sound::cpal_audio_backend::CpalAudioBackend;
 use crate::sound::loudness::LoudnessMeter;
@@ -28,10 +29,13 @@ impl Default for AudioService {
 
 impl AudioService {
     pub fn new() -> Self {
-        let mut planner = FftPlanner::new();
+        Self::with_backend(Box::new(CpalAudioBackend::new()))
+    }
 
+    fn with_backend(backend: Box<dyn crate::sound::audio_backend::AudioBackend>) -> Self {
+        let mut planner = FftPlanner::new();
         AudioService(Arc::new(Inner {
-            audio_backend: Mutex::new(Box::new(CpalAudioBackend::new())),
+            audio_backend: Mutex::new(backend),
             audio_buffer: Mutex::new(std::array::from_fn(|_| {
                 let mut buffer = CircularBuffer::boxed();
                 // this ensures a consistent size for all channels, even if the source is mono
@@ -39,7 +43,9 @@ impl AudioService {
                 buffer
             })),
             latest_fft: Mutex::new(std::array::from_fn(|_| vec![])),
-            fft_scratch: Mutex::new(FftScratch::default()),
+            fft_scratch: Mutex::new(FftWork::default()),
+            processing_worker: Mutex::new(None),
+            loudness_snapshot: Mutex::new((Vec::new(), "LUFS")),
             fft_peaks: Mutex::new(std::array::from_fn(|_| None)),
             samples_written: Default::default(),
             channel_samples_written: Default::default(),
@@ -84,14 +90,6 @@ impl AudioService {
             info!("   {}", system.name);
         }
 
-        let weak_inner = Arc::downgrade(&self.0);
-        backend.set_frame_callback(Box::new(move |frame| {
-            let upgrade_result = weak_inner.upgrade();
-            if let Some(inner) = upgrade_result {
-                inner.handle_samples(frame);
-            }
-        }));
-
         let source = if let Some(prev_device_id) = prev_device {
             devices
                 .iter()
@@ -101,10 +99,70 @@ impl AudioService {
         } else {
             backend.find_default_capture_source()
         };
-        backend.start_capture(source.clone());
-        self.current_capture_source.lock().unwrap().replace(source);
+        self.start_capture(backend.as_mut(), source);
         self.available_sources.lock().unwrap().clear();
         self.available_sources.lock().unwrap().extend(devices);
+    }
+
+    pub fn update_source(&self, id: String) {
+        if self.get_source().id == id {
+            return;
+        }
+        let source = self
+            .available_sources
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|x| x.id == id)
+            .cloned();
+        if let Some(source) = source {
+            info!("Switching to source: {}", source.name);
+            self.start_capture(self.audio_backend.lock().unwrap().as_mut(), source);
+        }
+    }
+
+    fn start_capture(
+        &self,
+        backend: &mut dyn crate::sound::audio_backend::AudioBackend,
+        source: CaptureSource,
+    ) {
+        backend.stop_capture();
+        // Join the old processor before resetting state. Its old capture closure
+        // remains harmless even if the backend takes a moment to stop its stream.
+        drop(self.processing_worker.lock().unwrap().take());
+        {
+            let mut buffers = self.audio_buffer.lock().unwrap();
+            for buffer in buffers.iter_mut() {
+                buffer.fill(0.0);
+            }
+            self.samples_written.store(0, Ordering::Release);
+            for position in &self.channel_samples_written {
+                position.store(0, Ordering::Release);
+            }
+        }
+        self.last_fft_idx.store(0, Ordering::Release);
+        self.last_frame_size.store(0, Ordering::Release);
+        for fft in self.latest_fft.lock().unwrap().iter_mut() {
+            fft.clear();
+        }
+        *self.fft_peaks.lock().unwrap() = [None; CHANNELS];
+        *self.loudness_meter.lock().unwrap() = Box::new(LufsLoudnessMeter::new());
+        self.loudness_snapshot.lock().unwrap().0.clear();
+        self.current_capture_source
+            .lock()
+            .unwrap()
+            .replace(source.clone());
+        let weak = Arc::downgrade(&self.0);
+        let rate = source.sample_rate.max(1);
+        let (submitter, worker) =
+            AudioWorker::start(source.channels.max(1) as usize, rate, move |frame, gap| {
+                if let Some(inner) = weak.upgrade() {
+                    inner.handle_samples(frame, rate, gap);
+                }
+            });
+        *self.processing_worker.lock().unwrap() = Some(worker);
+        backend.set_frame_callback(Box::new(move |frame| submitter.submit(frame)));
+        backend.start_capture(source);
     }
 }
 
@@ -114,7 +172,9 @@ pub struct Inner {
     pub available_sources: Mutex<Vec<CaptureSource>>,
     pub audio_buffer: Mutex<[Box<CircularBuffer<384000, f32>>; CHANNELS]>,
     latest_fft: Mutex<[Vec<f32>; CHANNELS]>,
-    fft_scratch: Mutex<FftScratch>,
+    fft_scratch: Mutex<FftWork>,
+    processing_worker: Mutex<Option<AudioWorker>>,
+    loudness_snapshot: Mutex<(Vec<f32>, &'static str)>,
     fft_peaks: Mutex<[Option<FftPeak>; CHANNELS]>,
     samples_written: AtomicU64,
     channel_samples_written: [AtomicU64; CHANNELS],
@@ -133,6 +193,13 @@ pub struct Inner {
 struct FftScratch {
     input: Vec<Complex<f32>>,
     workspace: Vec<Complex<f32>>,
+}
+
+#[derive(Default)]
+struct FftWork {
+    scratch: FftScratch,
+    samples: [Vec<f32>; CHANNELS],
+    output: [Vec<f32>; CHANNELS],
 }
 
 impl FftScratch {
@@ -179,32 +246,29 @@ impl Inner {
         }
     }
 
-    pub fn update_source(&self, id: String) {
-        let current_id = self.get_source().id;
-
-        if current_id != id {
-            let available = self.available_sources.lock().unwrap();
-            let mut audio_backend = self.audio_backend.lock().unwrap();
-            let new_source = available.iter().find(|x| x.id == id);
-            if let Some(new_source) = new_source.cloned() {
-                info!("Switching to source: {}", new_source.name);
-                audio_backend.stop_capture();
-                audio_backend.start_capture(new_source.clone());
-                self.current_capture_source
-                    .lock()
-                    .unwrap()
-                    .replace(new_source);
-            }
-        }
-    }
-
-    pub fn handle_samples(&self, samples: &[Vec<f32>]) {
+    fn handle_samples(&self, samples: &[Vec<f32>], sample_rate: u32, gap: u64) {
         if samples.is_empty() {
             return;
         }
         self.last_frame_size
             .store(samples[0].len() as u64, Ordering::Release);
         let mut buffer = self.audio_buffer.lock().unwrap();
+        if gap != 0 {
+            // Preserve the sample clock and represent dropped audio as silence,
+            // rather than joining unrelated samples into a false continuous wave.
+            for history in buffer.iter_mut() {
+                if gap >= history.len() as u64 {
+                    history.fill(0.0);
+                } else {
+                    history.extend(std::iter::repeat_n(0.0, gap as usize));
+                }
+            }
+            let position = self.samples_written.fetch_add(gap, Ordering::AcqRel) + gap;
+            for position in &self.channel_samples_written {
+                position.fetch_add(gap, Ordering::AcqRel);
+            }
+            self.last_fft_idx.store(position, Ordering::Release);
+        }
         let fft_channels = if samples.len() == 1 {
             // Mono audio, no need to mix channels
             buffer[0].extend_from_slice(samples[0].deref());
@@ -237,72 +301,90 @@ impl Inner {
         self.samples_written
             .fetch_add(samples[0].len() as u64, Ordering::Release);
         drop(buffer);
-        self.do_fft(fft_channels);
-        self.do_loudness_calc(samples);
+        if gap != 0 {
+            *self.loudness_meter.lock().unwrap() = Box::new(LufsLoudnessMeter::new());
+        }
+        self.do_fft(fft_channels, sample_rate);
+        self.do_loudness_calc(samples, sample_rate);
     }
 
-    fn do_loudness_calc(&self, samples: &[Vec<f32>]) {
-        let mut loudness_meter = self.loudness_meter.lock().unwrap();
-        loudness_meter.process_frame(samples, self.get_source().sample_rate);
+    fn do_loudness_calc(&self, samples: &[Vec<f32>], sample_rate: u32) {
+        let mut meter = self.loudness_meter.lock().unwrap();
+        meter.process_frame(samples, sample_rate);
+        // The UI reads only this published snapshot, never the working meter.
+        *self.loudness_snapshot.lock().unwrap() = (meter.get_loudness(), meter.unit());
     }
 
-    fn do_fft(&self, channels: usize) {
-        let fft_rate = self.fft_rate.load(Ordering::Acquire);
-        let source = self.get_source();
-        let fft_sample_offset = source.sample_rate as u64 / fft_rate as u64;
-
+    fn do_fft(&self, channels: usize, sample_rate: u32) {
+        profiling::scope!("audio.process_fft");
+        let fft_rate = self.fft_rate.load(Ordering::Acquire).max(1);
+        let fft_sample_offset = (sample_rate as u64 / fft_rate as u64).max(1);
         let samples_written = self.samples_written.load(Ordering::Acquire);
         let mut last_fft_idx = self.last_fft_idx.load(Ordering::Acquire);
-        let mut latest_fft = self.latest_fft.lock().unwrap();
-        let since_last_fft = samples_written - last_fft_idx;
-        let to_do = since_last_fft / fft_sample_offset;
-        let audio_buffer = self.audio_buffer.lock().unwrap();
-        let fft_plan = self.fft_plan.lock().unwrap();
-        let mut fft_window = self.fft_window.lock().unwrap();
-        let mut scratch = self.fft_scratch.lock().unwrap();
-        let mut fft_peaks = self.fft_peaks.lock().unwrap();
-        let current_capture_source = self.current_capture_source.lock().unwrap();
-        let listeners = self.fft_listeners.lock().unwrap();
-        if current_capture_source.is_none() {
+        let to_do = samples_written.saturating_sub(last_fft_idx) / fft_sample_offset;
+        if to_do == 0 {
             return;
         }
 
+        // Clone the Arc, releasing the plan lock before running any transforms.
+        let plan = self.fft_plan.lock().unwrap().clone();
+        let mut window = self.fft_window.lock().unwrap();
+        let (window_scalar, window) = window.get_window(plan.len());
+        let mut work = self.fft_scratch.lock().unwrap();
+        let FftWork {
+            scratch,
+            samples,
+            output,
+        } = &mut *work;
         for _ in 0..to_do {
             last_fft_idx += fft_sample_offset;
-            let offset_from_buffer_end = samples_written - last_fft_idx;
-
+            let offset = (samples_written - last_fft_idx) as usize;
+            {
+                profiling::scope!("audio.snapshot_fft_input");
+                let buffers = self.audio_buffer.lock().unwrap();
+                for i in 0..channels {
+                    let end = buffers[i].len().saturating_sub(offset);
+                    let start = end.saturating_sub(plan.len());
+                    samples[i].clear();
+                    if end - start == plan.len() {
+                        samples[i].extend(buffers[i].range(start..end).copied());
+                    }
+                }
+            }
+            // Neither the sample history nor published FFT is locked during DSP.
             for i in 0..channels {
-                if audio_buffer[i].len() < fft_plan.len() {
+                if samples[i].is_empty() {
+                    output[i].clear();
                     continue;
                 }
-                let end_idx = audio_buffer[i]
-                    .len()
-                    .saturating_sub(offset_from_buffer_end as usize);
-                let start_idx = end_idx.saturating_sub(fft_plan.len());
-                if end_idx - start_idx != fft_plan.len() {
-                    continue;
-                }
-
-                let sample_iter = audio_buffer[i].range(start_idx..end_idx);
-                let (window_scalar, window) = fft_window.get_window(fft_plan.len());
-
                 scratch.transform(
-                    fft_plan.as_ref(),
-                    sample_iter.copied(),
+                    plan.as_ref(),
+                    samples[i].iter().copied(),
                     window,
                     window_scalar,
-                    &mut latest_fft[i],
+                    &mut output[i],
                 );
             }
+            for data in &mut output[channels..] {
+                data.clear();
+            }
+            let peaks = std::array::from_fn(|i| {
+                if output[i].is_empty() {
+                    None
+                } else {
+                    estimate_frequency_peak(&output[i], sample_rate as usize)
+                }
+            });
+            {
+                let listeners = self.fft_listeners.lock().unwrap();
+                for listener in listeners.iter() {
+                    listener.accept_fft(output, plan.len());
+                }
+            }
+            // Swap retained allocations rather than copy the full result under the lock.
+            std::mem::swap(&mut *self.latest_fft.lock().unwrap(), output);
+            *self.fft_peaks.lock().unwrap() = peaks;
             self.last_fft_idx.store(last_fft_idx, Ordering::Release);
-            listeners.iter().for_each(|listener| {
-                listener.accept_fft(&latest_fft, fft_plan.len());
-            })
-        }
-
-        let rate = current_capture_source.as_ref().unwrap().sample_rate;
-        for i in 0..channels {
-            fft_peaks[i] = estimate_frequency_peak(&latest_fft[i], rate as usize);
         }
     }
 
@@ -465,13 +547,11 @@ impl Inner {
     }
 
     pub fn get_loudness_values(&self) -> Vec<f32> {
-        let meter = self.loudness_meter.lock().unwrap();
-        meter.get_loudness()
+        self.loudness_snapshot.lock().unwrap().0.clone()
     }
 
     pub fn get_loudness_unit(&self) -> &'static str {
-        let meter = self.loudness_meter.lock().unwrap();
-        meter.unit()
+        self.loudness_snapshot.lock().unwrap().1
     }
 }
 
@@ -521,5 +601,169 @@ mod fft_scratch_tests {
             assert_eq!(output.as_ptr(), output_ptr);
             assert_eq!(output.len(), size / 2);
         }
+    }
+}
+
+#[cfg(test)]
+mod processing_tests {
+    use super::*;
+    use crate::sound::audio_backend::{AudioBackend, OptionCaptureCallback};
+    use crate::sound::audio_system::AudioSystem;
+    use crate::ui::plot::{PlotData, XYPlotData};
+    use crossbeam_channel::{Receiver, Sender, bounded};
+    use std::time::{Duration, Instant};
+
+    #[derive(Default)]
+    struct TestBackend {
+        callback: Arc<Mutex<OptionCaptureCallback>>,
+    }
+    impl AudioBackend for TestBackend {
+        fn detect_supported_capture_sources(&self) -> Vec<CaptureSource> {
+            Vec::new()
+        }
+        fn detect_supported_audio_systems(&self) -> Vec<AudioSystem> {
+            Vec::new()
+        }
+        fn find_default_capture_source(&self) -> CaptureSource {
+            CaptureSource::default()
+        }
+        fn set_current_audio_system(&mut self, _: AudioSystem) {}
+        fn get_current_audio_system(&self) -> AudioSystem {
+            panic!("not used")
+        }
+        fn set_frame_callback(&mut self, callback: Box<dyn FnMut(&[Vec<f32>]) + Send + Sync>) {
+            *self.callback.lock().unwrap() = Some(Arc::new(Mutex::new(callback)));
+        }
+        fn start_capture(&mut self, _: CaptureSource) {}
+        fn stop_capture(&mut self) {}
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn wait_for(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !ready() {
+            assert!(
+                Instant::now() < deadline,
+                "audio worker did not make progress"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    struct PausedListener {
+        entered: Sender<()>,
+        resume: Receiver<()>,
+    }
+    impl Visualizer for PausedListener {
+        fn get_plot_data(&self) -> PlotData {
+            PlotData::XY(XYPlotData::default())
+        }
+        fn min_canvas_size(&self) -> egui::Vec2 {
+            egui::Vec2::ZERO
+        }
+        fn get_draw_callback(
+            &self,
+            _: egui::Rect,
+            _: &crate::wavesync::WaveSyncVisuals,
+        ) -> Option<egui::epaint::PaintCallback> {
+            None
+        }
+        fn accept_fft(&self, _: &[Vec<f32>; CHANNELS], _: usize) {
+            let _ = self.entered.try_send(());
+            let _ = self.resume.recv_timeout(Duration::from_secs(2));
+        }
+    }
+
+    #[test]
+    fn fft_listener_cannot_block_render_snapshot_locks_or_capture() {
+        let backend = TestBackend::default();
+        let callback = backend.callback.clone();
+        let service = AudioService::with_backend(Box::new(backend));
+        service.update_fft_plan(64);
+        service.update_fft_rate(3000);
+        let (entered_tx, entered_rx) = bounded(1);
+        let (resume_tx, resume_rx) = bounded(1);
+        service.register_fft_listener(Box::new(PausedListener {
+            entered: entered_tx,
+            resume: resume_rx,
+        }));
+        service.start_capture(
+            service.audio_backend.lock().unwrap().as_mut(),
+            CaptureSource {
+                channels: 2,
+                sample_rate: 192000,
+                ..CaptureSource::default()
+            },
+        );
+        let capture = callback.lock().unwrap().as_ref().unwrap().clone();
+        capture.lock().unwrap()(&[vec![0.5; 64], vec![-0.25; 64]]);
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        // Worker is blocked in its FFT listener. These are the UI-facing locks.
+        assert!(service.audio_buffer.try_lock().is_ok());
+        assert!(service.latest_fft.try_lock().is_ok());
+        assert!(service.fft_plan.try_lock().is_ok());
+        assert!(service.fft_peaks.try_lock().is_ok());
+        assert!(service.loudness_snapshot.try_lock().is_ok());
+        assert_eq!(service.get_samples(AudioChannel::Master, 4), vec![0.125; 4]);
+        // Capture still returns while DSP is stalled.
+        capture.lock().unwrap()(&[vec![0.25; 64], vec![0.25; 64]]);
+        resume_tx.send(()).unwrap();
+        drop(resume_tx);
+        // Do not keep the listener's bounded notification channel full.
+        drop(entered_rx);
+        wait_for(|| service.last_fft_idx.load(Ordering::Acquire) >= 64);
+        assert_eq!(service.get_fft(AudioChannel::Master).len(), 32);
+        drop(service.processing_worker.lock().unwrap().take());
+    }
+
+    #[test]
+    fn source_switch_retires_old_capture_and_resets_processing_state() {
+        let backend = TestBackend::default();
+        let callback = backend.callback.clone();
+        let service = AudioService::with_backend(Box::new(backend));
+        let source = CaptureSource {
+            channels: 2,
+            sample_rate: 192000,
+            ..CaptureSource::default()
+        };
+        service.start_capture(
+            service.audio_backend.lock().unwrap().as_mut(),
+            source.clone(),
+        );
+        let old = callback.lock().unwrap().as_ref().unwrap().clone();
+        old.lock().unwrap()(&[vec![0.5; 256], vec![0.25; 256]]);
+        wait_for(|| service.get_samples_written() == 256);
+        service.start_capture(
+            service.audio_backend.lock().unwrap().as_mut(),
+            CaptureSource {
+                id: "new".into(),
+                sample_rate: 96000,
+                ..source
+            },
+        );
+        old.lock().unwrap()(&[vec![1.0; 256], vec![1.0; 256]]);
+        assert_eq!(service.get_samples_written(), 0);
+        assert!(service.get_fft(AudioChannel::Master).is_empty());
+        let new = callback.lock().unwrap().as_ref().unwrap().clone();
+        new.lock().unwrap()(&[vec![-0.5; 256], vec![-0.5; 256]]);
+        wait_for(|| service.get_samples_written() == 256);
+        assert_eq!(service.get_samples(AudioChannel::Master, 4), vec![-0.5; 4]);
+        drop(service.processing_worker.lock().unwrap().take());
+    }
+
+    #[test]
+    fn dropped_samples_advance_clock_with_a_silent_gap() {
+        let service = AudioService::with_backend(Box::<TestBackend>::default());
+        service.handle_samples(&[vec![0.5; 4], vec![0.5; 4]], 192000, 0);
+        service.handle_samples(&[vec![-0.5; 4], vec![-0.5; 4]], 192000, 3);
+        assert_eq!(service.get_samples_written(), 11);
+        assert_eq!(service.get_channel_samples_written(AudioChannel::Left), 11);
+        assert_eq!(
+            service.get_samples(AudioChannel::Master, 11),
+            vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, -0.5, -0.5, -0.5, -0.5]
+        );
+        assert_eq!(service.last_fft_idx.load(Ordering::Acquire), 7);
     }
 }

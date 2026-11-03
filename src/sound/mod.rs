@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod audio_backend;
 pub mod audio_service;
+mod audio_worker;
 pub mod audio_system;
 pub mod capture_source;
 pub mod cpal_audio_backend;

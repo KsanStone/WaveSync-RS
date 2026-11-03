@@ -1,0 +1,63 @@
+   Compiling wavesync-rs v0.1.0 (C:\Users\filip\Documents\Coding\WaveSync-RS)
+    Finished `release` profile [optimized] target(s) in 6.50s
+     Running `target\release\wavesync-rs.exe`
+[2026-11-03T16:40:04Z INFO  wavesync_rs::persistance] Initializing persistence @ C:\Users\filip\AppData\Roaming\WaveSync\WaveSync\data\storage.ron
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::audio_service] Detected Audio Devices:
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::audio_service]    1. ≡ƒÄñ Microphone (Logi C270 HD WebCam) (1ch, 48000Hz, F32)
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::audio_service]    2. ≡ƒöä 1 - 24G2W1G4 (AMD High Definition Audio Device) (2ch, 48000Hz, F32)
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::audio_service]    3. ≡ƒöä 2 - M27Q (AMD High Definition Audio Device) (2ch, 48000Hz, F32)
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::audio_service]    4. ≡ƒöä Headphones (Sound Blaster Play! 4) (2ch, 192000Hz, F32)
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::audio_service] Audio Systems:
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::audio_service]    WASAPI
+[2026-11-03T16:40:04Z INFO  wavesync_rs::sound::cpal_audio_backend] Selected loopback stream config for 'Headphones (Sound Blaster Play! 4)': 192000 Hz, 2 channels, U8 (native requested: 192000 Hz)
+[2026-11-03T16:40:04Z INFO  audio_thread_priority::rt_win] task 156 bumped to real time priority.
+[2026-11-03T16:40:04Z WARN  wavesync_rs::app] The active graphics backend does not support a transparent window surface; supported alpha modes: [Opaque]
+[2026-11-03T16:40:05Z DEBUG waveform_scroll] 192000 Hz, 168 frames: max frame interval 36.3 ms, publication step 40.0 ms of audio, motion 28.75 px, deviation from frame-time motion 0.20 px
+[2026-11-03T16:40:05Z DEBUG waveform_scroll] 192000 Hz, 168 frames: max frame interval 36.0 ms, publication step 30.0 ms of audio, motion 27.98 px, deviation from frame-time motion 0.28 px
+[2026-11-03T16:40:06Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 8.1 ms, publication step 10.0 ms of audio, motion 6.39 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:06Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 8.1 ms, publication step 10.0 ms of audio, motion 6.38 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:07Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 16.8 ms, publication step 10.0 ms of audio, motion 13.07 px, deviation from frame-time motion 0.08 px
+[2026-11-03T16:40:07Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 16.7 ms, publication step 10.0 ms of audio, motion 13.06 px, deviation from frame-time motion 0.09 px
+[2026-11-03T16:40:08Z DEBUG waveform_scroll] 192000 Hz, 23 frames: max frame interval 810.3 ms, publication step 810.0 ms of audio, motion 636.11 px, deviation from frame-time motion 1.45 px
+[2026-11-03T16:40:08Z DEBUG waveform_scroll] 192000 Hz, 23 frames: max frame interval 809.9 ms, publication step 810.0 ms of audio, motion 636.11 px, deviation from frame-time motion 0.87 px
+[2026-11-03T16:40:09Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.9 ms, publication step 10.0 ms of audio, motion 6.15 px, deviation from frame-time motion 0.06 px
+[2026-11-03T16:40:09Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 8.4 ms, publication step 10.0 ms of audio, motion 6.54 px, deviation from frame-time motion 0.07 px
+[2026-11-03T16:40:10Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.5 ms, publication step 10.0 ms of audio, motion 5.95 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:10Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.5 ms, publication step 10.0 ms of audio, motion 5.95 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:11Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 8.0 ms, publication step 10.0 ms of audio, motion 6.24 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:11Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 8.0 ms, publication step 10.0 ms of audio, motion 6.27 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:12Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.2 ms, publication step 10.0 ms of audio, motion 5.66 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:12Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.2 ms, publication step 10.0 ms of audio, motion 5.62 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:13Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 8.1 ms, publication step 10.0 ms of audio, motion 6.39 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:13Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 8.1 ms, publication step 10.0 ms of audio, motion 6.37 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:14Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.9 ms, publication step 10.0 ms of audio, motion 6.26 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:14Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.9 ms, publication step 10.0 ms of audio, motion 6.25 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:15Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.0 ms, publication step 10.0 ms of audio, motion 5.57 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:15Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.0 ms, publication step 10.0 ms of audio, motion 5.56 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:16Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.7 ms, publication step 10.0 ms of audio, motion 5.98 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:16Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.5 ms, publication step 10.0 ms of audio, motion 5.86 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:17Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.2 ms, publication step 10.0 ms of audio, motion 5.65 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:17Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.2 ms, publication step 10.0 ms of audio, motion 5.69 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:18Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 8.0 ms, publication step 10.0 ms of audio, motion 6.35 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:18Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 8.0 ms, publication step 10.0 ms of audio, motion 6.32 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:19Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.8 ms, publication step 10.0 ms of audio, motion 6.17 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:19Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.8 ms, publication step 10.0 ms of audio, motion 6.16 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:20Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.8 ms, publication step 10.0 ms of audio, motion 6.17 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:20Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.8 ms, publication step 10.0 ms of audio, motion 6.17 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:21Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.0 ms, publication step 10.0 ms of audio, motion 5.53 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:21Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.0 ms, publication step 10.0 ms of audio, motion 5.52 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:22Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.3 ms, publication step 10.0 ms of audio, motion 5.71 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:22Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.2 ms, publication step 10.0 ms of audio, motion 5.66 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:23Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.3 ms, publication step 10.0 ms of audio, motion 5.75 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:23Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.3 ms, publication step 10.0 ms of audio, motion 5.75 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:24Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 9.6 ms, publication step 10.0 ms of audio, motion 7.53 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:24Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 9.4 ms, publication step 10.0 ms of audio, motion 7.37 px, deviation from frame-time motion 0.05 px
+[2026-11-03T16:40:25Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 14.2 ms, publication step 10.0 ms of audio, motion 18.42 px, deviation from frame-time motion 0.08 px
+[2026-11-03T16:40:25Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 14.2 ms, publication step 10.0 ms of audio, motion 18.42 px, deviation from frame-time motion 0.08 px
+[2026-11-03T16:40:26Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 8.0 ms, publication step 10.0 ms of audio, motion 10.41 px, deviation from frame-time motion 0.09 px
+[2026-11-03T16:40:26Z DEBUG waveform_scroll] 192000 Hz, 165 frames: max frame interval 7.9 ms, publication step 10.0 ms of audio, motion 10.33 px, deviation from frame-time motion 0.09 px
+[2026-11-03T16:40:27Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.8 ms, publication step 10.0 ms of audio, motion 10.17 px, deviation from frame-time motion 0.08 px
+[2026-11-03T16:40:27Z DEBUG waveform_scroll] 192000 Hz, 166 frames: max frame interval 7.7 ms, publication step 10.0 ms of audio, motion 10.09 px, deviation from frame-time motion 0.09 px
+[2026-11-03T16:40:28Z DEBUG waveform_scroll] 192000 Hz, 160 frames: max frame interval 32.6 ms, publication step 30.0 ms of audio, motion 25.61 px, deviation from frame-time motion 0.09 px
+[2026-11-03T16:40:28Z DEBUG waveform_scroll] 192000 Hz, 161 frames: max frame interval 32.7 ms, publication step 30.0 ms of audio, motion 25.70 px, deviation from frame-time motion 0.09 px
+[2026-11-03T16:40:29Z INFO  wavesync_rs::app] The close button was pressed; stopping

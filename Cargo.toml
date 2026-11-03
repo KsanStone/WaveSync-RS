@@ -2,13 +2,19 @@
 name = "wavesync-rs"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.98"
 build = "build.rs"
+
+[[bench]]
+name = "math"
+harness = false
 
 [features]
 default = []
 cpu-profiling = ["profiling/profile-with-puffin", "dep:puffin_http"]
 
 [dependencies]
+crossbeam-channel = "0.5.17"
 profiling = { version = "1.0.18", default-features = false }
 puffin_http = { version = "0.17.0", optional = true }
 egui_extras = "0.32.3"
