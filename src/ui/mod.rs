@@ -6,6 +6,7 @@ use wgpu::{BindGroup, BindGroupLayout, BlendState, Device, RenderPass};
 
 pub(crate) mod aa_line;
 pub mod gradient;
+pub(crate) mod gradient_texture;
 pub mod loudness_indicator;
 pub mod plot;
 pub(crate) mod uniform_upload;

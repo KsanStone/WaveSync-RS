@@ -1,15 +1,15 @@
 use crate::sound::audio_service::{AudioService, CHANNELS};
 use crate::sound::{AudioChannel, scale_to_db};
 use crate::ui::gradient::Gradient;
+use crate::ui::gradient_texture::{GRADIENT_RESOLUTION, GradientTexture};
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
     FULL_SCREEN_QUAD, VERTEX_2D_BUFFER_LAYOUT, bind_buff, create_bind_group_with_layout,
-    create_pipeline, create_texture, freq_spectrum_select, log_axis_sel, write_1d_texture,
-    write_2d_texture_row,
+    create_pipeline, create_texture, freq_spectrum_select, log_axis_sel, write_2d_texture_row,
 };
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
-use crate::{create_shader, deref_arc, impl_settings};
+use crate::{deref_arc, impl_settings};
 use circular_buffer::CircularBuffer;
 use egui;
 use egui::Ui;
@@ -27,7 +27,6 @@ use wgpu::{
 };
 
 /// This does not need to be too large, texture sampling will do the rest.
-const GRADIENT_LOOKUP_LENGTH: u32 = 1024;
 /// Generous resolution claim, if we size the mapping buffer in accordance with this
 /// we wont need to resize it every 5 seconds.
 /// Its size will be 32kb so that's fine.
@@ -45,7 +44,6 @@ pub struct Inner {
     channel: AudioChannel,
     data: Arc<RwLock<WaveSyncAppData>>,
     head_offset: AtomicU32,
-    current_gradient: Mutex<Option<Gradient>>,
     fft_send_buffer: Mutex<Box<CircularBuffer<TEMP_FFT_SIZE, Vec<f32>>>>,
     /// Size (freq axis "width") of the current FFT buffer.
     fft_buffer_size: AtomicUsize,
@@ -89,7 +87,6 @@ impl SpectrogramVisualizer {
             settings_open: Default::default(),
             data,
             head_offset: Default::default(),
-            current_gradient: Mutex::new(None),
             fft_send_buffer: Mutex::new(CircularBuffer::boxed()),
             do_resize_buffers: Default::default(),
             rendering_resources: Default::default(),
@@ -127,7 +124,9 @@ impl Default for SpectrogramSettings {
 }
 
 impl Visualizer for SpectrogramVisualizer {
-    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(64.0, 24.0) }
+    fn min_canvas_size(&self) -> egui::Vec2 {
+        egui::vec2(64.0, 24.0)
+    }
 
     fn get_plot_data(&self) -> PlotData {
         let settings = &self.data.read().unwrap().spectrogram_settings;
@@ -157,7 +156,9 @@ impl Visualizer for SpectrogramVisualizer {
     }
 
     fn error_message(&self, canvas_size: egui::Vec2) -> Option<String> {
-        if let Some(error) = self.size_error(canvas_size) { return Some(error); }
+        if let Some(error) = self.size_error(canvas_size) {
+            return Some(error);
+        }
         if self.audio_service.get_fft_size() > 2_usize.pow(19) {
             return Some(
                 "Spectrogram visualizer does not support FFT sizes larger than 65k".to_string(),
@@ -225,7 +226,7 @@ struct RenderResources {
     vertex_buffer: wgpu::Buffer,
     pos_mapping_buffer: wgpu::Buffer,
     storage_texture: wgpu::Texture,
-    gradient_texture: wgpu::Texture,
+    gradient: GradientTexture,
     queue: Queue,
 }
 
@@ -259,7 +260,6 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
         if resources.is_none() || resize {
             // In case we are re-creating the pipeline (fft-size changed)
             // we'll need to re-fill the gradient texture.
-            self.visualizer.current_gradient.lock().unwrap().take();
             {
                 let mut scratch = self.visualizer.scratch.lock().unwrap();
                 scratch.mapping.invalidate();
@@ -273,8 +273,11 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 .fft_buffer_length
                 .store(buff_length, Ordering::Release);
 
-            let spectrogram_shader =
-                create_shader!(device, "spectrogram", "../../../shader/spectrogram.wgsl");
+            let spectrogram_shader = GradientTexture::shader(
+                device,
+                "spectrogram",
+                include_str!("../../../shader/spectrogram.wgsl"),
+            );
 
             let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("spectrogram_uniform_buffer"),
@@ -305,14 +308,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 false,
             );
 
-            let (gradient_texture, gradient_tex_view, gradient_tex_bind_ty) = create_texture(
-                "spectrogram_gradient_texture",
-                device,
-                GRADIENT_LOOKUP_LENGTH,
-                1,
-                wgpu::TextureFormat::Rgba8Unorm,
-                false,
-            );
+            let gradient = GradientTexture::new(device, GRADIENT_RESOLUTION);
 
             let (bind_group_layout, uniform_bind_group) = create_bind_group_with_layout(
                 device,
@@ -328,11 +324,6 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                         BindingResource::TextureView(&storage_tex_view),
                     ),
                     (
-                        2,
-                        &gradient_tex_bind_ty,
-                        BindingResource::TextureView(&gradient_tex_view),
-                    ),
-                    (
                         3,
                         &bind_buff(BufferBindingType::Storage { read_only: true }),
                         pos_mapping_buffer.as_entire_binding(),
@@ -343,7 +334,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
 
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("waveform layout"),
-                bind_group_layouts: &[&bind_group_layout],
+                bind_group_layouts: &[&bind_group_layout, &gradient.layout],
                 push_constant_ranges: &[],
             });
 
@@ -362,9 +353,12 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 vertex_buffer,
                 pos_mapping_buffer,
                 storage_texture,
-                gradient_texture,
+                gradient,
                 queue: queue.clone(),
             })
+        }
+        if let Some(resources) = resources.as_ref() {
+            resources.gradient.update(queue, &self.gradient);
         }
         vec![]
     }
@@ -382,7 +376,6 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
             let queue = &resources.queue;
             let plot_data = self.visualizer.get_plot_data().expect_xy();
             let source = self.visualizer.audio_service.get_source();
-            let mut current_gradient = self.visualizer.current_gradient.lock().unwrap();
             let settings = &self.visualizer.data.read().unwrap().spectrogram_settings;
 
             let expected_buff_length =
@@ -391,14 +384,6 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
                 self.visualizer
                     .do_resize_buffers
                     .store(true, Ordering::Release);
-            }
-
-            if current_gradient.is_none() || *current_gradient.as_ref().unwrap() != self.gradient {
-                let gradient_data = self
-                    .gradient
-                    .pre_compute_lookup(GRADIENT_LOOKUP_LENGTH as usize);
-                write_1d_texture(queue, &resources.gradient_texture, &gradient_data);
-                *current_gradient = Some(self.gradient.clone());
             }
 
             let mut send_buffer = self.visualizer.fft_send_buffer.lock().unwrap();
@@ -519,6 +504,7 @@ impl CallbackTrait for SpectrogramVisualizerCallback {
 
             render_pass.set_vertex_buffer(0, resources.vertex_buffer.slice(..));
             render_pass.set_bind_group(0, &resources.uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &resources.gradient.bind_group, &[]);
             render_pass.set_pipeline(&resources.pipeline);
             render_pass.draw(0..6, 0..1);
         }

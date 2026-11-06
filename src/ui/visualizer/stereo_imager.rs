@@ -2,6 +2,8 @@ use crate::sound::peaking::{
     PeakComputer, PeakSettings, hold_smooth_falloff::HoldSmoothFalloffPeakComputer,
 };
 use crate::ui::aa_line::{AaLines, LineScratch, Target};
+use crate::ui::gradient::Gradient;
+use crate::ui::gradient_texture::{GRADIENT_RESOLUTION, GradientTexture};
 use crate::{
     deref_arc, impl_settings,
     sound::{
@@ -86,6 +88,7 @@ impl Default for StereoImagerVisualizerSettings {
 }
 
 struct RenderResources {
+    gradient: GradientTexture,
     queue: wgpu::Queue,
     line: AaLines,
     peak_line: AaLines,
@@ -157,9 +160,9 @@ impl Visualizer for StereoImagerVisualizer {
             rect,
             StereoImagerVisualizerCallback {
                 visualizer: self.clone(),
-                color_start: visuals.color_start(),
-                color_end: visuals.color_end(),
-                highlight_color: visuals.highlight_color(),
+                gradient: visuals.stereo_gradient(),
+                color_end: visuals.stereo_color(),
+                highlight_color: visuals.stereo_color().lerp_to_gamma(Color32::WHITE, 0.10),
             },
         ))
     }
@@ -177,8 +180,8 @@ impl Visualizer for StereoImagerVisualizer {
 }
 
 struct StereoImagerVisualizerCallback {
+    gradient: Gradient,
     visualizer: StereoImagerVisualizer,
-    color_start: Color32,
     color_end: Color32,
     highlight_color: Color32,
 }
@@ -186,8 +189,6 @@ struct StereoImagerVisualizerCallback {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct FillUniforms {
-    end_color: [f32; 4],
-    start_color: [f32; 4],
     gradient_center: [f32; 2],
     gradient_radius: f32,
     _padding: f32, // Padding to make the struct size a multiple of 16 bytes
@@ -213,19 +214,15 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 mapped_at_creation: false,
             });
 
-            let grad_fill_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("grad fill shader"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../../../shader/radial_gradient_fill.wgsl").into(),
-                ),
-            });
-
+            let grad_fill_shader = GradientTexture::shader(
+                device,
+                "radial fill",
+                include_str!("../../../shader/radial_gradient_fill.wgsl"),
+            );
             let fill_uniform_buffer =
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("waveform_uniform_buffer"),
                     contents: bytemuck::cast_slice(&[FillUniforms {
-                        end_color: [1.0, 0.0, 1.0, 1.0],
-                        start_color: [0.0, 1.0, 0.0, 1.0],
                         gradient_center: [0.5, 0.5],
                         gradient_radius: 0.5,
                         _padding: 0.0,
@@ -236,10 +233,11 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             let (fill_bind_group_layout, fill_bind_group) =
                 uniform_bindings(device, 0, &fill_uniform_buffer, "waveform");
 
+            let gradient = GradientTexture::new(device, GRADIENT_RESOLUTION);
             let fill_pipeline_layout =
                 device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                     label: Some("stereoimager fill layout"),
-                    bind_group_layouts: &[&fill_bind_group_layout],
+                    bind_group_layouts: &[&fill_bind_group_layout, &gradient.layout],
                     push_constant_ranges: &[],
                 });
 
@@ -252,6 +250,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 fill_vertex_buffer: fill_buffer,
                 fill_uniform_buffer,
                 fill_bind_group,
+                gradient,
                 fill_pipeline: create_pipeline(
                     device,
                     &grad_fill_shader,
@@ -263,6 +262,9 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             });
         }
 
+        if let Some(resources) = resources.as_ref() {
+            resources.gradient.update(queue, &self.gradient);
+        }
         vec![]
     }
 
@@ -469,8 +471,6 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
                 queue,
                 &resources.fill_uniform_buffer,
                 bytemuck::bytes_of(&FillUniforms {
-                    end_color: self.color_end.to_normalized_gamma_f32(),
-                    start_color: self.color_start.to_normalized_gamma_f32(),
                     gradient_center: [gl_center.x, gl_center.y],
                     gradient_radius: plot_data.gl_radius(plot_data.radius),
                     _padding: 0.0,
@@ -478,6 +478,7 @@ impl CallbackTrait for StereoImagerVisualizerCallback {
             );
 
             render_pass.set_bind_group(0, &resources.fill_bind_group, &[]);
+            render_pass.set_bind_group(1, &resources.gradient.bind_group, &[]);
             render_pass.set_vertex_buffer(0, resources.fill_vertex_buffer.slice(..));
             render_pass.set_pipeline(&resources.fill_pipeline);
             render_pass.draw(0..tri_vertices.len() as u32, 0..1);

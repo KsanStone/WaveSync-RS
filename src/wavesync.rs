@@ -79,6 +79,8 @@ pub struct WaveSyncAppData {
     pub fft_rate: u32,
     pub fft_size: usize,
     pub theme_name: String,
+    #[serde(default)]
+    pub color_mode: ColorMode,
     pub audio_device_name: Option<String>,
     pub window_background: WindowBackground,
     #[serde(default)]
@@ -99,6 +101,7 @@ impl Default for WaveSyncAppData {
             fft_rate: 60,
             fft_size: 32768,
             theme_name: "Frappe".into(),
+            color_mode: ColorMode::default(),
             audio_device_name: None,
             window_background: WindowBackground::Acrylic,
             background_opacity: BackgroundOpacity::default(),
@@ -107,8 +110,92 @@ impl Default for WaveSyncAppData {
     }
 }
 
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorMode {
+    #[default]
+    Monochrome,
+    Multicolor,
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_default_to_monochrome_and_modes_round_trip() {
+        let old = ron::to_string(&WaveSyncAppData::default())
+            .unwrap()
+            .replace("color_mode:Monochrome,", "");
+        assert!(!old.contains("color_mode"));
+        assert_eq!(
+            ron::from_str::<WaveSyncAppData>(&old).unwrap().color_mode,
+            ColorMode::Monochrome
+        );
+        let mut data = WaveSyncAppData::default();
+        data.color_mode = ColorMode::Multicolor;
+        assert_eq!(
+            ron::from_str::<WaveSyncAppData>(&ron::to_string(&data).unwrap())
+                .unwrap()
+                .color_mode,
+            ColorMode::Multicolor
+        );
+    }
+
+    #[test]
+    fn both_color_modes_use_the_selected_theme() {
+        for (_, theme) in THEMES {
+            let mut visuals = WaveSyncVisuals {
+                theme,
+                color_mode: ColorMode::Monochrome,
+                window_background: WindowBackground::Solid,
+                background_opacity: BackgroundOpacity::default(),
+            };
+            assert_eq!(visuals.wave_color(), theme.blue);
+            assert_eq!(visuals.rms_color(), theme.blue);
+            assert_eq!(visuals.vectorscope_color(), theme.blue);
+            assert_eq!(
+                visuals.spectrum_gradient().get(1.0),
+                theme.blue.to_normalized_gamma_f32()
+            );
+            visuals.color_mode = ColorMode::Multicolor;
+            // Some themes deliberately reuse hues. Honor those palettes instead
+            // of introducing colors from a different theme to force uniqueness.
+            assert_eq!(visuals.wave_color(), theme.teal);
+            assert_eq!(visuals.rms_color(), theme.mauve);
+            assert_eq!(visuals.vectorscope_color(), theme.green);
+            assert_eq!(visuals.color_end(), theme.sapphire);
+            assert_eq!(visuals.stereo_color(), theme.pink);
+            assert_eq!(
+                visuals.spectrum_gradient().get(1.0),
+                theme.sky.to_normalized_gamma_f32()
+            );
+            assert_eq!(
+                visuals.stereo_gradient().get(1.0),
+                theme.yellow.to_normalized_gamma_f32()
+            );
+            assert_eq!(
+                visuals.spectrogram_gradient().get(1.0),
+                theme.yellow.to_normalized_gamma_f32()
+            );
+            assert!(visuals.spectrogram_gradient().stops.len() > 2);
+            assert!(visuals.spectrum_gradient().stops.len() > 2);
+            assert!(visuals.stereo_gradient().stops.len() > 2);
+        }
+    }
+}
+
+impl ColorMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Monochrome => "Monochrome",
+            Self::Multicolor => "Multicolor",
+        }
+    }
+}
+
 pub struct WaveSyncVisuals {
     theme: catppuccin_egui::Theme,
+    color_mode: ColorMode,
     window_background: WindowBackground,
     background_opacity: BackgroundOpacity,
 }
@@ -142,7 +229,58 @@ impl WaveSyncVisuals {
     }
 
     pub fn wave_color(&self) -> Color32 {
-        self.theme.blue
+        if self.color_mode == ColorMode::Multicolor {
+            self.theme.teal
+        } else {
+            self.theme.blue
+        }
+    }
+
+    pub fn vectorscope_color(&self) -> Color32 {
+        if self.color_mode == ColorMode::Multicolor {
+            self.theme.green
+        } else {
+            self.theme.blue
+        }
+    }
+
+    pub fn stereo_color(&self) -> Color32 {
+        if self.color_mode == ColorMode::Multicolor {
+            self.theme.pink
+        } else {
+            self.theme.blue
+        }
+    }
+
+    pub fn spectrum_gradient(&self) -> Gradient {
+        if self.color_mode == ColorMode::Monochrome {
+            return Gradient::new(vec![
+                Stop::new(0.0, self.color_start()),
+                Stop::new(1.0, self.color_end()),
+            ])
+            .unwrap();
+        }
+        Gradient::new(vec![
+            Stop::new(0.0, self.theme.base),
+            Stop::new(0.35, self.theme.base.lerp_to_gamma(self.theme.blue, 0.25)),
+            Stop::new(0.75, self.theme.blue),
+            Stop::new(1.0, self.theme.sky),
+        ])
+        .unwrap()
+    }
+
+    pub fn stereo_gradient(&self) -> Gradient {
+        if self.color_mode == ColorMode::Monochrome {
+            return self.spectrum_gradient();
+        }
+        Gradient::new(vec![
+            Stop::new(0.0, self.theme.base),
+            Stop::new(0.25, self.theme.base.lerp_to_gamma(self.theme.mauve, 0.5)),
+            Stop::new(0.55, self.theme.maroon),
+            Stop::new(0.8, self.theme.peach),
+            Stop::new(1.0, self.theme.yellow),
+        ])
+        .unwrap()
     }
 
     pub fn ex_wave_color(&self) -> Color32 {
@@ -150,7 +288,11 @@ impl WaveSyncVisuals {
     }
 
     pub fn rms_color(&self) -> Color32 {
-        self.theme.blue
+        if self.color_mode == ColorMode::Multicolor {
+            self.theme.mauve
+        } else {
+            self.theme.blue
+        }
     }
 
     pub fn color_start(&self) -> Color32 {
@@ -158,7 +300,11 @@ impl WaveSyncVisuals {
     }
 
     pub fn color_end(&self) -> Color32 {
-        self.theme.blue
+        if self.color_mode == ColorMode::Multicolor {
+            self.theme.sapphire
+        } else {
+            self.theme.blue
+        }
     }
 
     /// Lighter trace accent for overlays that need to stand out from the live signal.
@@ -175,6 +321,31 @@ impl WaveSyncVisuals {
     }
 
     pub fn spectrogram_gradient(&self) -> Gradient {
+        if self.color_mode == ColorMode::Multicolor {
+            return Gradient::new(vec![
+                Stop::new(
+                    0.0,
+                    if self.translucent_background() {
+                        Color32::TRANSPARENT
+                    } else {
+                        self.theme.base
+                    },
+                ),
+                Stop::new(
+                    0.2,
+                    if self.translucent_background() {
+                        Color32::TRANSPARENT
+                    } else {
+                        self.theme.base
+                    },
+                ),
+                Stop::new(0.4, self.theme.base.lerp_to_gamma(self.theme.mauve, 0.6)),
+                Stop::new(0.65, self.theme.maroon),
+                Stop::new(0.85, self.theme.peach),
+                Stop::new(1.0, self.theme.yellow),
+            ])
+            .unwrap();
+        }
         Gradient::new(vec![
             // The waterfall's lowest intensity used to be an opaque near-black pixel. Let the
             // system material show through it, while retaining that black floor in Solid mode.
@@ -200,6 +371,7 @@ impl WaveSync {
         audio_service.update_fft_plan(data.fft_size);
         audio_service.update_fft_rate(data.fft_rate);
         let theme_name = data.theme_name.clone();
+        let color_mode = data.color_mode;
         let data = Arc::new(RwLock::new(data));
         let window_background = data.read().unwrap().window_background;
         let background_opacity = data.read().unwrap().background_opacity;
@@ -251,6 +423,7 @@ impl WaveSync {
             last_update: Instant::now(),
             visuals: WaveSyncVisuals {
                 theme: theme_from_name(&theme_name),
+                color_mode,
                 window_background,
                 background_opacity,
             },
@@ -585,6 +758,16 @@ impl AppHandler for WaveSync {
                             });
                     });
                     ui.horizontal(|ui| {
+                        ui.label("Graph colors");
+                        egui::ComboBox::from_id_salt("graph_color_mode")
+                            .selected_text(self.visuals.color_mode.label())
+                            .show_ui(ui, |ui| {
+                                for mode in [ColorMode::Monochrome, ColorMode::Multicolor] {
+                                    ui.selectable_value(&mut self.visuals.color_mode, mode, mode.label());
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("Window background");
                         let mut background = self.data.read().unwrap().window_background;
                         egui::ComboBox::from_id_salt("window_background")
@@ -669,6 +852,7 @@ impl AppHandler for WaveSync {
         data.fft_size = self.audio_service.get_fft_size();
         data.fft_rate = self.audio_service.fft_rate.load(Ordering::Acquire);
         data.theme_name = theme_name(self.visuals.theme).to_string();
+        data.color_mode = self.visuals.color_mode;
         data.audio_device_name = self.audio_service.get_device_name();
 
         persistence.set(APP_KEY, &*data);
@@ -738,7 +922,7 @@ fn media_card(
                 format_duration(media.position)
             } else {
                 format!(
-                    "{}  ·  {} / {}",
+                    "{}  ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â·  {} / {}",
                     media.artist,
                     format_duration(media.position),
                     format_duration(media.duration)

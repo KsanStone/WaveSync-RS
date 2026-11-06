@@ -7,6 +7,8 @@ use crate::sound::smoothing::exponential_falloff_smoother::ExponentialFalloffSmo
 use crate::sound::smoothing::multiplicative_smoother::MultiplicativeSmoother;
 use crate::sound::{AudioChannel, frequency_of_bin, scale_to_db};
 use crate::ui::aa_line::{AaLines, LineScratch, Target};
+use crate::ui::gradient::Gradient;
+use crate::ui::gradient_texture::{GRADIENT_RESOLUTION, GradientTexture};
 use crate::ui::plot::{Axis, PlotData, XYPlotData};
 use crate::ui::visualizer::visualizer_widget::Visualizer;
 use crate::ui::{
@@ -14,7 +16,7 @@ use crate::ui::{
     freq_spectrum_select, log_axis_sel,
 };
 use crate::wavesync::{WaveSyncAppData, WaveSyncVisuals};
-use crate::{create_shader, deref_arc, impl_settings};
+use crate::{deref_arc, impl_settings};
 use egui;
 use egui::{Color32, PaintCallback, PaintCallbackInfo, Rect};
 use egui::{Slider, Ui};
@@ -225,8 +227,8 @@ impl Visualizer for SpectrumVisualizer {
 }
 
 pub struct SpectrumVisualizerCallback {
+    gradient: Gradient,
     visualizer: SpectrumVisualizer,
-    color_start: Color32,
     color_end: Color32,
     highlight_color: Color32,
 }
@@ -235,18 +237,11 @@ impl SpectrumVisualizerCallback {
     pub(crate) fn new(visualizer: SpectrumVisualizer, visuals: &WaveSyncVisuals) -> Self {
         Self {
             visualizer,
-            color_start: visuals.color_start(),
+            gradient: visuals.spectrum_gradient(),
             color_end: visuals.color_end(),
             highlight_color: visuals.highlight_color(),
         }
     }
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct Uniforms {
-    color_end: [f32; 4],
-    color_start: [f32; 4],
 }
 
 #[repr(C)]
@@ -258,14 +253,13 @@ struct BarInstanceData {
 }
 
 struct RenderResources {
+    gradient: GradientTexture,
     bars_pipeline: wgpu::RenderPipeline,
     line_fill_pipeline: wgpu::RenderPipeline,
     outline: AaLines,
     peak_line: AaLines,
     vertex_buffer: wgpu::Buffer,
     instance_buffer: wgpu::Buffer,
-    uniform_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
     queue: Queue,
 }
 
@@ -295,45 +289,23 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 mapped_at_creation: false,
             });
 
-            let bar_shader =
-                create_shader!(device, "bar shader", "../../../shader/instanced_bars.wgsl");
-            let line_fill_shader =
-                create_shader!(device, "lf", "../../../shader/instanced_line_fill.wgsl");
+            let bar_shader = GradientTexture::shader_at(
+                device,
+                "bar shader",
+                include_str!("../../../shader/instanced_bars.wgsl"),
+                0,
+            );
+            let line_fill_shader = GradientTexture::shader_at(
+                device,
+                "lf",
+                include_str!("../../../shader/instanced_line_fill.wgsl"),
+                0,
+            );
 
-            let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("spectrum_uniform_buffer"),
-                contents: bytemuck::cast_slice(&[Uniforms {
-                    color_start: [1.0, 1.0, 1.0, 1.0],
-                    color_end: [1.0, 1.0, 1.0, 1.0],
-                }]),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
-            let bind_group_layout =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("spectrum_uniform_buffer_bind_group_layout"),
-                    entries: &[wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    }],
-                });
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Spectrum Uniform Bind Group"),
-                layout: &bind_group_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
-            });
-
+            let gradient = GradientTexture::new(device, GRADIENT_RESOLUTION);
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("spectrum layout"),
-                bind_group_layouts: &[&bind_group_layout],
+                bind_group_layouts: &[&gradient.layout],
                 push_constant_ranges: &[],
             });
 
@@ -394,10 +366,12 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 ),
                 vertex_buffer,
                 instance_buffer,
-                uniform_buffer,
-                bind_group,
+                gradient,
                 queue: queue.clone(),
             })
+        }
+        if let Some(resources) = resources.as_ref() {
+            resources.gradient.update(queue, &self.gradient);
         }
         Vec::new()
     }
@@ -591,18 +565,7 @@ impl CallbackTrait for SpectrumVisualizerCallback {
                 *peak_key = None;
             }
 
-            crate::upload_uniform_if_changed!(
-                *uniform_uploads,
-                "spectrum.uniform_buffer",
-                resources.queue,
-                &resources.uniform_buffer,
-                bytemuck::bytes_of(&Uniforms {
-                    color_end: self.color_end.to_normalized_gamma_f32(),
-                    color_start: self.color_start.to_normalized_gamma_f32(),
-                })
-            );
-
-            render_pass.set_bind_group(0, &resources.bind_group, &[]);
+            render_pass.set_bind_group(0, &resources.gradient.bind_group, &[]);
 
             if bars_drawn == 0 {
                 return;

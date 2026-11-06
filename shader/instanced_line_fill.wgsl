@@ -4,14 +4,6 @@ struct VertexInput {
     @location(1) rect: vec4<f32>
 };
 
-struct Uniforms {
-    end_color: vec4<f32>,
-    start_color: vec4<f32>,
-};
-
-@group(0) @binding(0)
-var<uniform> colors: Uniforms;
-
 struct VertexOutput {
     @builtin(position) pos: vec4<f32>,
     @location(0) height: f32
@@ -47,7 +39,6 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let factor = (input.height + 1) * 0.5;
-    let inv_factor = 1.0 - factor;
-    let color = colors.end_color * factor + colors.start_color * inv_factor;
+    let color = sample_gradient(factor);
     return vec4(color.xyz, 0.5);
 }

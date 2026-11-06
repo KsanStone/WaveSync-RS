@@ -3,8 +3,6 @@ struct VertexInput {
 };
 
 struct Uniforms {
-    end_color: vec4<f32>,
-    start_color: vec4<f32>,
     gradient_center: vec2<f32>,
     gradient_radius: f32,
 };
@@ -40,9 +38,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         1.0
     );
 
-    return vec4(mix(
-        uniforms.start_color,
-        uniforms.end_color,
-        factor
-    ).xyz, 0.5);
+    return vec4(sample_gradient(factor).xyz, 0.5);
 }

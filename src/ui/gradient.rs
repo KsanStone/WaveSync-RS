@@ -6,6 +6,35 @@ pub struct Stop {
     pub color: [f32; 4],
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lookup_interpolates_multiple_stops_and_preserves_endpoints() {
+        let gradient = Gradient::new(vec![
+            Stop::new(0.0, Color32::RED),
+            Stop::new(0.5, Color32::GREEN),
+            Stop::new(1.0, Color32::BLUE),
+        ])
+        .unwrap();
+        let table = gradient.pre_compute_lookup(5);
+        assert_eq!(table[0], [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(table[1], [0.5, 0.5, 0.0, 1.0]);
+        assert_eq!(table[2], [0.0, 1.0, 0.0, 1.0]);
+        assert_eq!(table[4], [0.0, 0.0, 1.0, 1.0]);
+        assert!(gradient.pre_compute_lookup(0).is_empty());
+        assert_eq!(gradient.pre_compute_lookup(1), vec![table[0]]);
+        let partial = Gradient::new(vec![
+            Stop::new(0.25, Color32::RED),
+            Stop::new(0.75, Color32::BLUE),
+        ])
+        .unwrap();
+        assert_eq!(partial.get(0.0), partial.stops[0].color);
+        assert_eq!(partial.get(1.0), partial.stops[1].color);
+    }
+}
+
 impl Stop {
     pub fn new(offset: f32, color: Color32) -> Self {
         Self {
@@ -47,6 +76,13 @@ impl Gradient {
     pub fn get(&self, pos: f32) -> [f32; 4] {
         let value = pos.clamp(0.0, 1.0);
 
+        if value <= self.stops[0].offset {
+            return self.stops[0].color;
+        }
+        if value >= self.stops[self.stops.len() - 1].offset {
+            return self.stops[self.stops.len() - 1].color;
+        }
+
         let mut start = &self.stops[0];
         let mut end = &self.stops[self.stops.len() - 1];
 
@@ -63,6 +99,12 @@ impl Gradient {
     }
 
     pub fn pre_compute_lookup(&self, size: usize) -> Vec<[f32; 4]> {
+        if size == 0 {
+            return Vec::new();
+        }
+        if size == 1 {
+            return vec![self.get(0.0)];
+        }
         let mut lookup = Vec::with_capacity(size);
         for i in 0..size {
             lookup.push(self.get(i as f32 / (size - 1) as f32));

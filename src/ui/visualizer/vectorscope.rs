@@ -79,7 +79,9 @@ impl VectorscopeVisualizer {
 }
 
 impl Visualizer for VectorscopeVisualizer {
-    fn min_canvas_size(&self) -> egui::Vec2 { egui::vec2(48.0, 48.0) }
+    fn min_canvas_size(&self) -> egui::Vec2 {
+        egui::vec2(48.0, 48.0)
+    }
 
     fn get_plot_data(&self) -> PlotData {
         let range = self.data.read().unwrap().vectorscope_settings.range;
@@ -89,7 +91,9 @@ impl Visualizer for VectorscopeVisualizer {
     }
 
     fn error_message(&self, canvas_size: egui::Vec2) -> Option<String> {
-        if let Some(error) = self.size_error(canvas_size) { return Some(error); }
+        if let Some(error) = self.size_error(canvas_size) {
+            return Some(error);
+        }
         if self.audio_service.get_active_audio_channels() < 2 {
             Some("Vectorscope requires at least 2 channels".into())
         } else {
@@ -102,7 +106,7 @@ impl Visualizer for VectorscopeVisualizer {
             rect,
             VectorscopeVisualizerCallback {
                 visualizer: self.clone(),
-                color: visuals.wave_color(),
+                color: visuals.vectorscope_color(),
                 rect,
             },
         ))
@@ -115,7 +119,7 @@ impl Visualizer for VectorscopeVisualizer {
     ) -> Option<Box<dyn PostEquiRender>> {
         Some(Box::new(VectorscopeVisualizerCallback {
             visualizer: self.clone(),
-            color: visuals.wave_color(),
+            color: visuals.vectorscope_color(),
             rect,
         }))
     }

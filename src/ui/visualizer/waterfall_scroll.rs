@@ -76,9 +76,12 @@ mod shader_tests {
     use egui_wgpu::wgpu;
     #[test]
     fn waterfall_shader_validates() {
-        let module =
-            wgpu::naga::front::wgsl::parse_str(include_str!("../../../shader/spectrogram.wgsl"))
-                .unwrap();
+        let module = wgpu::naga::front::wgsl::parse_str(
+            &crate::ui::gradient_texture::GradientTexture::shader_source(include_str!(
+                "../../../shader/spectrogram.wgsl"
+            )),
+        )
+        .unwrap();
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),
             wgpu::naga::valid::Capabilities::all(),
@@ -113,18 +116,15 @@ mod shader_tests {
                 wgpu::TextureFormat::Rgba8Unorm,
                 false,
             );
-            let (gradient, gradient_view, gradient_ty) = crate::ui::create_texture(
-                "gradient test",
-                &device,
-                256,
-                1,
-                wgpu::TextureFormat::Rgba8Unorm,
-                false,
+            let gradient = crate::ui::gradient_texture::GradientTexture::new(&device, 256);
+            gradient.update(
+                &queue,
+                &crate::ui::gradient::Gradient::new(vec![
+                    crate::ui::gradient::Stop::new(0.0, egui::Color32::BLACK),
+                    crate::ui::gradient::Stop::new(1.0, egui::Color32::WHITE),
+                ])
+                .unwrap(),
             );
-            let colors: Vec<_> = (0..256)
-                .map(|i| [i as f32 / 255.0, i as f32 / 255.0, i as f32 / 255.0, 1.0])
-                .collect();
-            crate::ui::write_1d_texture(&queue, &gradient, &colors);
             let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
                 size: size_of::<Uniforms>() as u64,
@@ -150,11 +150,6 @@ mod shader_tests {
                         wgpu::BindingResource::TextureView(&history_view),
                     ),
                     (
-                        2,
-                        &gradient_ty,
-                        wgpu::BindingResource::TextureView(&gradient_view),
-                    ),
-                    (
                         3,
                         &crate::ui::bind_buff(wgpu::BufferBindingType::Storage { read_only: true }),
                         mapping.as_entire_binding(),
@@ -164,15 +159,14 @@ mod shader_tests {
             );
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: None,
-                bind_group_layouts: &[&layout],
+                bind_group_layouts: &[&layout, &gradient.layout],
                 push_constant_ranges: &[],
             });
-            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: None,
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("../../../shader/spectrogram.wgsl").into(),
-                ),
-            });
+            let shader = crate::ui::gradient_texture::GradientTexture::shader(
+                &device,
+                "waterfall test",
+                include_str!("../../../shader/spectrogram.wgsl"),
+            );
             let pipeline = crate::ui::create_pipeline(
                 &device,
                 &shader,
@@ -261,6 +255,7 @@ mod shader_tests {
                             });
                             pass.set_pipeline(&pipeline);
                             pass.set_bind_group(0, &bind_group, &[]);
+                            pass.set_bind_group(1, &gradient.bind_group, &[]);
                             pass.set_vertex_buffer(0, vertices.slice(..));
                             pass.draw(0..6, 0..1);
                         }
